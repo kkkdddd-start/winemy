@@ -1,7 +1,12 @@
+//go:build windows
+
 package m11_filesystem
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"time"
 
@@ -94,19 +99,16 @@ func (m *FilesystemModule) GetData() ([]map[string]interface{}, error) {
 }
 
 func computeFileHash(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
+	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
 	}
+	defer file.Close()
 
-	hash := ""
-	for _, b := range data {
-		hash += string(b)
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
 	}
 
-	if len(hash) > 64 {
-		hash = hash[:64]
-	}
-
-	return hash, nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

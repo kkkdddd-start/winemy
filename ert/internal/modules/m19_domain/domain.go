@@ -1,3 +1,5 @@
+//go:build windows
+
 package m19_domain
 
 import (

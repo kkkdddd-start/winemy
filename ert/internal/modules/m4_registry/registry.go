@@ -1,3 +1,5 @@
+//go:build windows
+
 package m4_registry
 
 import (

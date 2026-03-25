@@ -1,3 +1,5 @@
+//go:build windows
+
 package m23_baseline
 
 import (

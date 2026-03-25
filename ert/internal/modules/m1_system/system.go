@@ -1,3 +1,5 @@
+//go:build windows
+
 package m1_system
 
 import (
@@ -53,6 +55,28 @@ func (m *SystemModule) GetInfo() (*model.SystemInfo, error) {
 		return nil, ErrNotCollected
 	}
 	return info, nil
+}
+
+func (m *SystemModule) GetData() ([]map[string]interface{}, error) {
+	info, err := m.GetInfo()
+	if err != nil {
+		return nil, err
+	}
+	return []map[string]interface{}{
+		{
+			"hostname":     info.Hostname,
+			"os_name":      info.OSName,
+			"os_version":   info.OSVersion,
+			"architecture": info.Architecture,
+			"boot_time":    info.BootTime.Format(time.RFC3339),
+			"current_user": info.CurrentUser,
+			"cpu_count":    info.CPUCount,
+			"memory_total": info.MemoryTotal,
+			"disk_total":   info.DiskTotal,
+			"is_domain":    info.IsDomain,
+			"domain_name":  info.DomainName,
+		},
+	}, nil
 }
 
 func (m *SystemModule) collectSystemInfo() (*model.SystemInfo, error) {

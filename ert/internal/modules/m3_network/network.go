@@ -1,3 +1,5 @@
+//go:build windows
+
 package m3_network
 
 import (

@@ -1,3 +1,5 @@
+//go:build windows
+
 package m7_monitor
 
 import (

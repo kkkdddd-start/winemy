@@ -1,7 +1,13 @@
+//go:build windows
+
 package m10_kernel
 
 import (
 	"context"
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/yourname/ert/internal/model"
 	"github.com/yourname/ert/internal/registry"
@@ -28,46 +34,98 @@ func (m *KernelModule) Init(ctx context.Context, s registry.Storage) error {
 }
 
 func (m *KernelModule) Collect(ctx context.Context) error {
-	m.drivers = []model.DriverDTO{
-		{
-			Name:      "ntoskrnl.exe",
-			Path:      "C:\\Windows\\System32\\ntoskrnl.exe",
-			BaseAddr:  "0xFFFFF80000000000",
-			Size:      15000000,
-			IsSigned:  true,
-			Signature: "Microsoft Windows",
-			RiskLevel: model.RiskLow,
-		},
-		{
-			Name:      "hal.dll",
-			Path:      "C:\\Windows\\System32\\hal.dll",
-			BaseAddr:  "0xFFFFF80000000000",
-			Size:      350000,
-			IsSigned:  true,
-			Signature: "Microsoft Windows",
-			RiskLevel: model.RiskLow,
-		},
-		{
-			Name:      "UnknownDriver.sys",
-			Path:      "C:\\Windows\\System32\\drivers\\UnknownDriver.sys",
-			BaseAddr:  "0xFFFFF80000000000",
-			Size:      50000,
+	m.drivers = []model.DriverDTO{}
+
+	output, err := exec.Command("tasklist", "/FI", "MODULES eq *.sys", "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		m.drivers = append(m.drivers, model.DriverDTO{
+			Name:      "Error",
+			Path:      fmt.Sprintf("Failed to enumerate drivers: %v", err),
+			BaseAddr:  "0x0",
+			Size:      0,
 			IsSigned:  false,
 			Signature: "",
-			RiskLevel: model.RiskCritical,
-		},
-		{
-			Name:      "win32k.sys",
-			Path:      "C:\\Windows\\System32\\win32k.sys",
-			BaseAddr:  "0xFFFFF96000000000",
-			Size:      3000000,
-			IsSigned:  true,
-			Signature: "Microsoft Windows",
 			RiskLevel: model.RiskLow,
-		},
+		})
+		return nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Split(line, ",")
+		if len(fields) < 5 {
+			continue
+		}
+
+		driverName := strings.Trim(fields[0], "\"")
+		if !strings.HasSuffix(strings.ToLower(driverName), ".sys") {
+			continue
+		}
+
+		_ = strings.Trim(fields[1], "\"")
+		memStr := strings.Trim(fields[4], "\"")
+		memStr = strings.ReplaceAll(memStr, ",", "")
+
+		size, _ := strconv.ParseUint(memStr, 10, 64)
+
+		riskLevel := model.RiskLow
+		isSigned := false
+		signature := ""
+
+		if isSuspiciousDriver(driverName) {
+			riskLevel = model.RiskHigh
+		}
+
+		driverPath := getDriverPath(driverName)
+
+		m.drivers = append(m.drivers, model.DriverDTO{
+			Name:      driverName,
+			Path:      driverPath,
+			BaseAddr:  "0x0",
+			Size:      size,
+			IsSigned:  isSigned,
+			Signature: signature,
+			RiskLevel: riskLevel,
+		})
 	}
 
 	return nil
+}
+
+func getDriverPath(driverName string) string {
+	driversPath := "C:\\Windows\\System32\\drivers"
+	return driversPath + "\\" + driverName
+}
+
+func isSuspiciousDriver(name string) bool {
+	nameLower := strings.ToLower(name)
+
+	suspiciousPatterns := []string{
+		"rootkit",
+		"keylog",
+		"keylogger",
+		"sniffer",
+		"packet",
+		"hook",
+		"inject",
+		"hide",
+		"stealth",
+		"malware",
+		"trojan",
+		"backdoor",
+	}
+
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(nameLower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *KernelModule) Stop() error {

@@ -1,7 +1,11 @@
+//go:build windows
+
 package m8_patch
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/yourname/ert/internal/model"
@@ -37,33 +41,101 @@ func (m *PatchModule) Init(ctx context.Context, s registry.Storage) error {
 }
 
 func (m *PatchModule) Collect(ctx context.Context) error {
-	m.installed = []HotfixDTO{
-		{
-			HotfixID:    "KB5000001",
-			Installed:   time.Now().AddDate(0, -1, 0),
-			Description: "Security Update",
+	m.installed = []HotfixDTO{}
+	m.missing = []string{}
+
+	output, err := exec.Command("wmic", "qfe", "get", "HotFixID,InstalledOn,Description", "/format:csv").Output()
+	if err != nil {
+		m.installed = append(m.installed, HotfixDTO{
+			HotfixID:    "Error",
+			Installed:   time.Time{},
+			Description: "Failed to query patches: " + err.Error(),
 			RiskLevel:   model.RiskLow,
-		},
-		{
-			HotfixID:    "KB5000002",
-			Installed:   time.Now().AddDate(0, 0, -15),
-			Description: "Security Update",
-			RiskLevel:   model.RiskLow,
-		},
-		{
-			HotfixID:    "KB5000003",
-			Installed:   time.Now().AddDate(0, -2, 0),
-			Description: "Critical Update",
-			RiskLevel:   model.RiskLow,
-		},
+		})
+		return nil
 	}
 
-	m.missing = []string{
-		"KB5034441",
-		"KB5034203",
+	lines := strings.Split(string(output), "\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Split(line, ",")
+		if len(fields) < 4 {
+			continue
+		}
+
+		hotfixID := strings.TrimSpace(fields[1])
+		installedOn := strings.TrimSpace(fields[2])
+		description := strings.TrimSpace(fields[3])
+
+		if hotfixID == "HotFixID" || hotfixID == "" {
+			continue
+		}
+
+		installedTime := parseWMITime(installedOn)
+		if installedTime.IsZero() {
+			installedTime = time.Now()
+		}
+
+		riskLevel := model.RiskLow
+		if isSecurityPatch(description) {
+			riskLevel = model.RiskLow
+		}
+
+		m.installed = append(m.installed, HotfixDTO{
+			HotfixID:    hotfixID,
+			Installed:   installedTime,
+			Description: description,
+			RiskLevel:   riskLevel,
+		})
 	}
 
 	return nil
+}
+
+func parseWMITime(dateStr string) time.Time {
+	if dateStr == "" || dateStr == "NULL" {
+		return time.Time{}
+	}
+
+	dateStr = strings.TrimSpace(dateStr)
+
+	formats := []string{
+		"1/2/2006",
+		"01/02/2006",
+		"2006-01-02",
+		"1/2/2006 12:00:00 AM",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func isSecurityPatch(description string) bool {
+	descLower := strings.ToLower(description)
+	securityKeywords := []string{
+		"security",
+		"security update",
+		"security rollup",
+		"cumulative update",
+		"hotfix",
+	}
+	for _, keyword := range securityKeywords {
+		if strings.Contains(descLower, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *PatchModule) Stop() error {
@@ -74,10 +146,14 @@ func (m *PatchModule) GetData() ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0)
 
 	for _, p := range m.installed {
+		installedStr := ""
+		if !p.Installed.IsZero() {
+			installedStr = p.Installed.Format(time.RFC3339)
+		}
 		result = append(result, map[string]interface{}{
 			"type":        "installed",
 			"hotfix_id":   p.HotfixID,
-			"installed":   p.Installed.Format(time.RFC3339),
+			"installed":   installedStr,
 			"description": p.Description,
 			"risk_level":  p.RiskLevel,
 		})
