@@ -1330,21 +1330,316 @@ baseline:
 - Apache: Combined Log Format
 - JSON 格式日志
 
-**SQLite 存储**：
+**IIS 日志字段定义**：
+
 ```sql
-CREATE TABLE web_logs (
+-- IIS 日志表
+CREATE TABLE iis_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,                 -- 日期 (YYYY-MM-DD)
+    time TEXT NOT NULL,                 -- 时间 (HH:MM:SS)
+    client_ip TEXT,                     -- 客户端 IP
+    username TEXT,                      -- 用户名
+    server_ip TEXT,                     -- 服务器 IP
+    method TEXT,                       -- HTTP 方法 (GET/POST)
+    uri TEXT,                          -- 请求 URI
+    query_string TEXT,                  -- 查询字符串
+    port INTEGER,                       -- 端口
+    protocol_version TEXT,              -- 协议版本
+    status_code INTEGER,                -- 状态码
+    substatus_code INTEGER,             -- 子状态码
+    win32_status INTEGER,              -- Win32 状态码
+    bytes_sent INTEGER,                -- 发送字节数
+    bytes_received INTEGER,             -- 接收字节数
+    time_taken INTEGER,                -- 耗时 (毫秒)
+    user_agent TEXT,                   -- User-Agent
+    cookie TEXT,                       -- Cookie
+    referer TEXT,                     -- Referer
+    session_id TEXT NOT NULL
+);
+
+CREATE INDEX idx_iis_timestamp ON iis_logs(date, time);
+CREATE INDEX idx_iis_client_ip ON iis_logs(client_ip);
+CREATE INDEX idx_iis_status ON iis_logs(status_code);
+CREATE INDEX idx_iis_uri ON iis_logs(uri);
+```
+
+**HTTP 状态码速查表**：
+
+| 状态码 | 名称 | 说明 | 风险 |
+|--------|------|------|------|
+| 200 | OK | 请求成功 | 低 |
+| 201 | Created | 资源创建成功 | 低 |
+| 204 | No Content | 无内容返回 | 低 |
+| 206 | Partial Content | 部分内容 | 中 |
+| 301 | Moved Permanently | 永久重定向 | 低 |
+| 302 | Found | 临时重定向 | 低 |
+| 304 | Not Modified | 未修改 | 低 |
+| 400 | Bad Request | 错误请求 | 中 |
+| 401 | Unauthorized | 未授权 | 中 |
+| 403 | Forbidden | 禁止访问 | 中 |
+| 404 | Not Found | 资源未找到 | 低 |
+| 405 | Method Not Allowed | 方法不允许 | 中 |
+| 408 | Request Timeout | 请求超时 | 中 |
+| 429 | Too Many Requests | 请求过多 | 中 |
+| 500 | Internal Server Error | 服务器内部错误 | 高 |
+| 501 | Not Implemented | 未实现 | 高 |
+| 502 | Bad Gateway | 错误网关 | 高 |
+| 503 | Service Unavailable | 服务不可用 | 高 |
+| 504 | Gateway Timeout | 网关超时 | 高 |
+
+**IIS 子状态码速查表**：
+
+| 子状态码 | 说明 | 风险 |
+|----------|------|------|
+| 0 | 成功 | 低 |
+| 1 | 抽象资源锁定冲突 | 中 |
+| 2 | 物理资源锁定冲突 | 中 |
+| 3 | 挂起的操作 | 低 |
+| 4 | 主资源锁定冲突 | 中 |
+| 5 | 锁定状态无效 | 中 |
+| 13 | 服务已终止 | 高 |
+| 14 | 备用文档无效 | 低 |
+| 18 | 句柄类型无效 | 中 |
+| 19 | 句柄状态无效 | 中 |
+| 21 | 操作无效 | 中 |
+| 22 | 不支持的操作 | 中 |
+
+**Apache/Nginx 日志格式**：
+
+```sql
+-- Apache 日志表
+CREATE TABLE apache_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    client_ip TEXT,
+    username TEXT,
+    method TEXT,
+    path TEXT,
+    protocol TEXT,
+    status_code INTEGER,
+    bytes_sent INTEGER,
+    referer TEXT,
+    user_agent TEXT,
+    session_id TEXT NOT NULL
+);
+
+-- Nginx 日志表
+CREATE TABLE nginx_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    client_ip TEXT,
+    backend_ip TEXT,
+    method TEXT,
+    path TEXT,
+    status_code INTEGER,
+    bytes_sent INTEGER,
+    bytes_received INTEGER,
+    request_time REAL,
+    user_agent TEXT,
+    session_id TEXT NOT NULL
+);
+```
+
+**SQL Server 日志字段**：
+
+```sql
+-- SQL Server 日志表
+CREATE TABLE sqlserver_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    log_type TEXT NOT NULL,            -- errorlog, agentlog
+    process_info TEXT,                 -- SPID、信息源
+    message TEXT NOT NULL,
+    severity INTEGER,                  -- 严重程度 1-25
+    session_id TEXT NOT NULL
+);
+
+CREATE INDEX idx_sqlserver_timestamp ON sqlserver_logs(timestamp);
+CREATE INDEX idx_sqlserver_severity ON sqlserver_logs(severity);
+```
+
+**SQL Server 错误严重程度**：
+
+| 严重程度 | 说明 | 可能原因 |
+|----------|------|----------|
+| 1-10 | 信息性消息 | 正常操作信息 |
+| 11-16 | 用户生成错误 | 语法错误、逻辑错误 |
+| 17-19 | 资源错误 | 磁盘空间不足、锁超时 |
+| 20-24 | 系统错误 | 硬件故障、数据损坏 |
+| 25 | 严重错误 | 启动失败 |
+
+**Tomcat/Jetty 日志格式**：
+
+```sql
+-- Tomcat 访问日志表
+CREATE TABLE tomcat_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     client_ip TEXT,
     method TEXT,
     path TEXT,
     status_code INTEGER,
+    bytes_sent INTEGER,
+    session_id TEXT,
     user_agent TEXT,
     session_id TEXT NOT NULL
 );
 
-CREATE INDEX idx_web_logs_timestamp ON web_logs(timestamp);
-CREATE INDEX idx_web_logs_ip ON web_logs(client_ip);
+-- Tomcat 错误日志表
+CREATE TABLE tomcat_catalina (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    level TEXT NOT NULL,              -- INFO, WARNING, SEVERE
+    source TEXT,                      -- 类名
+    message TEXT NOT NULL,
+    session_id TEXT NOT NULL
+);
+```
+
+**常见 Web 攻击模式检测**：
+
+```go
+// SQL 注入检测模式
+var sqlInjectionPatterns = []string{
+    `(?i)(union.*select|select.*from)`,
+    `(?i)(insert|update|delete).*from`,
+    `(?i)(exec|execute|xp_)`,
+    `(?i)(shutdown|drop|create)`,
+    `(?i)(union\s+all)`,
+    `(?i)(or\s+1\s*=\s*1|and\s+1\s*=\s*1)`,
+    `'.*or\s+'.*=`,
+    `'.*'\s*(or|and)\s*'.*'`,
+}
+
+// XSS 检测模式
+var xssPatterns = []string{
+    `(?i)<script`,
+    `(?i)javascript:`,
+    `(?i)onerror=`,
+    `(?i)onload=`,
+    `(?i)<iframe`,
+    `(?i)eval\(`,
+    `(?i)document\.cookie`,
+    `(?i)alert\(`,
+}
+
+// 命令注入检测模式
+var cmdInjectionPatterns = []string{
+    `(?i)(;|\||&)\s*(cat|ls|dir|rm)`,
+    `(?i)(;|\||&)\s*ping\s+`,
+    `(?i)(;|\||&)\s*nc\s+`,
+    `(?i)(;|\||&)\s*bash\s+`,
+    `(?i)(;|\||&)\s*sh\s+`,
+}
+
+// 路径遍历检测模式
+var pathTraversalPatterns = []string{
+    `(?i)(\.\./|\.\.\\)`,
+    `(?i)%2e%2e%2f|%2e%2e/`,
+    `(?i)%2e%2e%5c`,
+}
+
+// 检测函数
+func DetectWebAttacks(logEntry string) ([]string, RiskLevel) {
+    attacks := []string{}
+    
+    for _, pattern := range sqlInjectionPatterns {
+        if matched, _ := regexp.MatchString(pattern, logEntry); matched {
+            attacks = append(attacks, "SQL_INJECTION")
+        }
+    }
+    
+    for _, pattern := range xssPatterns {
+        if matched, _ := regexp.MatchString(pattern, logEntry); matched {
+            attacks = append(attacks, "XSS")
+        }
+    }
+    
+    for _, pattern := range cmdInjectionPatterns {
+        if matched, _ := regexp.MatchString(pattern, logEntry); matched {
+            attacks = append(attacks, "CMD_INJECTION")
+        }
+    }
+    
+    for _, pattern := range pathTraversalPatterns {
+        if matched, _ := regexp.MatchString(pattern, logEntry); matched {
+            attacks = append(attacks, "PATH_TRAVERSAL")
+        }
+    }
+    
+    risk := RiskLow
+    if len(attacks) >= 3 {
+        risk = RiskCritical
+    } else if len(attacks) >= 2 {
+        risk = RiskHigh
+    } else if len(attacks) >= 1 {
+        risk = RiskMedium
+    }
+    
+    return attacks, risk
+}
+```
+
+**Web 日志分析 SQLite 表（综合）**：
+
+```sql
+-- Web 攻击检测表
+CREATE TABLE web_attacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    client_ip TEXT NOT NULL,
+    attack_type TEXT NOT NULL,        -- SQL_INJECTION, XSS, CMD_INJECTION, etc
+    raw_log TEXT NOT NULL,           -- 原始日志
+    uri TEXT,
+    method TEXT,
+    session_id TEXT NOT NULL
+);
+
+CREATE INDEX idx_web_attacks_timestamp ON web_attacks(timestamp);
+CREATE INDEX idx_web_attacks_ip ON web_attacks(client_ip);
+CREATE INDEX idx_web_attacks_type ON web_attacks(attack_type);
+
+-- Web 统计表
+CREATE TABLE web_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    hour INTEGER,
+    metric_type TEXT NOT NULL,       -- requests, errors, unique_ips, etc
+    metric_value INTEGER NOT NULL,
+    session_id TEXT NOT NULL
+);
+```
+
+**日志统计指标**：
+
+| 指标 | 说明 | 计算方式 |
+|------|------|----------|
+| PV | 页面访问量 | COUNT(*) |
+| UV | 独立访客 | COUNT(DISTINCT client_ip) |
+| 带宽 | 总流量 | SUM(bytes_sent) |
+| 平均响应时间 | 请求耗时 | AVG(time_taken) |
+| 错误率 | 4xx+5xx 占比 | COUNT(status >= 400) / COUNT(*) |
+| QPS | 每秒请求数 | COUNT(*) / 时间范围(秒) |
+
+**FTS5 全文搜索**：
+
+```sql
+-- Web 日志 FTS5 虚拟表
+CREATE VIRTUAL TABLE web_logs_fts USING fts5(
+    uri,
+    query_string,
+    user_agent,
+    referer,
+    content='web_logs',
+    content_rowid='id'
+);
+
+-- 搜索可疑路径
+SELECT * FROM web_logs WHERE uri LIKE '%eval%' OR uri LIKE '%exec%';
+
+-- 搜索特定 IP 的所有请求
+SELECT * FROM web_logs WHERE client_ip = '192.168.1.100';
 ```
 
 ---
@@ -2985,10 +3280,289 @@ func CheckPermissions() error {
 - 重启后自动读取检查点恢复
 - 版本号校验避免脏数据
 
-### 4. 资源保护
+### 4. SQLite 损坏修复
+
+```go
+func (s *Storage) IntegrityCheck() error {
+    // 启动时执行完整性检查
+    row := s.db.QueryRow("PRAGMA integrity_check")
+    var result string
+    row.Scan(&result)
+    
+    if result != "ok" {
+        logger.Error("SQLite integrity check failed", "result", result)
+        return s.Repair()
+    }
+    return nil
+}
+
+func (s *Storage) Repair() error {
+    // 尝试自动修复
+    // 1. 备份损坏的数据库
+    bakPath := s.dbPath + ".bak." + time.Now().Format("20060102150405")
+    if err := copyFile(s.dbPath, bakPath); err != nil {
+        return err
+    }
+    
+    // 2. 尝试 VACUUM 重建数据库
+    if _, err := s.db.Exec("VACUUM"); err != nil {
+        logger.Error("VACUUM failed", "error", err)
+        return errors.New("database repair failed, restore from backup")
+    }
+    
+    return nil
+}
+```
+
+### 5. 混合 MD5 校验
+
+对于大文件（如日志文件、内存 dump）采用混合 MD5 校验策略：
+
+```go
+type HybridHasher struct {
+    chunkSize int64   // 分块大小 (默认 5MB)
+    maxRead   int64   // 最大读取量 (默认 50MB)
+}
+
+func (h *HybridHasher) Hash(ctx context.Context, path string) (string, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return "", err
+    }
+    defer f.Close()
+    
+    fi, err := f.Stat()
+    if err != nil {
+        return "", err
+    }
+    
+    // 小文件: 全文件 MD5
+    if fi.Size() <= h.maxRead {
+        return h.fullHash(f)
+    }
+    
+    // 大文件: 混合校验
+    // 策略: 头部 5MB + 尾部 5MB + 文件大小 + 文件名
+    return h.chunkHash(f, fi)
+}
+
+func (h *HybridHasher) chunkHash(f *os.File, fi os.FileInfo) (string, error) {
+    md5Hash := md5.New()
+    
+    // 1. 添加文件大小和文件名
+    md5Hash.Write([]byte(fmt.Sprintf("%d%s", fi.Size(), fi.Name())))
+    
+    // 2. 头部 5MB
+    f.Seek(0, 0)
+    io.CopyN(md5Hash, f, h.chunkSize)
+    
+    // 3. 尾部 5MB
+    f.Seek(-h.chunkSize, 2)
+    io.CopyN(md5Hash, f, h.chunkSize)
+    
+    return hex.EncodeToString(md5Hash.Sum(nil)), nil
+}
+```
+
+**校验策略**：
+| 文件大小 | 策略 | 说明 |
+|----------|------|------|
+| < 50MB | 全文件 MD5 | 完整读取计算 |
+| >= 50MB | 混合校验 | 头5MB + 尾5MB + 文件大小 + 文件名 |
+| 预期效果 | 10GB 文件 < 10 秒 | 仅读取 10MB |
+
+### 6. 资源保护
 - 信号量限制并发 goroutine
 - 内存映射 + 流式解析处理大文件
 - 正则搜索内存限制 500MB
+
+### 7. 正则表达式安全
+
+防止正则表达式恶意输入导致的资源耗尽：
+
+```go
+type RegexChecker struct {
+    maxComplexity int   // 最大复杂度（字符类嵌套层数）
+    maxDepth      int   // 最大深度（分组嵌套层数）
+    maxMatch      int64 // 最大匹配次数
+}
+
+func (r *RegexChecker) Validate(pattern string) error {
+    // 检测潜在恶意模式
+    dangerous := []string{
+        `.*.*`,           // 嵌套任意匹配
+        `(.+)+`,          // 重复分组
+        `(.+)+(.+)+`,     // 多重重复
+        `(a+)+`,          // 重复单字符
+        `(a*)++`,         // 嵌套量词
+    }
+    
+    for _, d := range dangerous {
+        if matched, _ := regexp.MatchString(d, pattern); matched {
+            return errors.New("dangerous regex pattern detected")
+        }
+    }
+    
+    // 编译测试
+    re, err := regexp.Compile(pattern)
+    if err != nil {
+        return err
+    }
+    
+    // 限制匹配次数，防止过度回溯
+    if r.maxMatch > 0 {
+        re.Longest()
+    }
+    
+    return nil
+}
+
+// 安全执行正则搜索
+func (r *RegexChecker) SafeSearch(ctx context.Context, re *regexp.Regexp, input string) ([]string, error) {
+    results := []string{}
+    matches := re.FindAllStringSubmatch(input, int(r.maxMatch))
+    
+    for _, match := range matches {
+        select {
+        case <-ctx.Done():
+            return results, ctx.Err()
+        default:
+            results = append(results, match...)
+        }
+    }
+    
+    return results, nil
+}
+```
+
+**正则安全规则**：
+| 危险模式 | 说明 | 风险 |
+|----------|------|------|
+| `.*.*` | 嵌套任意匹配 | 高 |
+| `(.+)+` | 重复分组导致回溯爆炸 | 严重 |
+| `(a+)+` | 单字符重复 | 严重 |
+| `(a*)++` | 嵌套量词 | 严重 |
+
+### 8. 背压机制
+
+防止任务队列过长导致内存溢出：
+
+```go
+type BackPressure struct {
+    maxQueueSize int
+    currentSize  atomic.Int64
+    suspended    atomic.Bool
+}
+
+func (bp *BackPressure) Submit(task *Task) error {
+    if bp.suspended.Load() {
+        return errors.New("system is under backpressure, task rejected")
+    }
+    
+    size := bp.currentSize.Add(1)
+    defer bp.currentSize.Add(-1)
+    
+    if size > int64(bp.maxQueueSize) {
+        bp.suspended.Store(true)
+        logger.Warn("Backpressure triggered, suspending task submission")
+        
+        // 触发背压后，等待队列消耗
+        go bp.monitor()
+    }
+    
+    return nil
+}
+
+func (bp *BackPressure) monitor() {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        size := bp.currentSize.Load()
+        if size < int64(bp.maxQueueSize)/2 {
+            bp.suspended.Store(false)
+            logger.Info("Backpressure released, resuming task submission")
+            return
+        }
+    }
+}
+```
+
+**背压触发条件**：
+- 任务队列超过 `maxQueueSize`（默认 10000）
+- 内存使用率超过 80%
+- 连续 GC 后内存仍未释放
+
+### 9. 杀软白名单申请指南
+
+主流杀软白名单申请流程：
+
+```yaml
+whitelist:
+  providers:
+    - name: "Windows Defender"
+      portal: "Microsoft Security Intelligence"
+      url: "https://microsoft.com/wdsi/filesubmission"
+      turnaround: "1-3 days"
+      
+    - name: "360 Security"
+      portal: "360 软件开放平台"
+      url: "https://open.soft.360.cn"
+      turnaround: "3-5 days"
+      
+    - name: "Tencent PC Manager"
+      portal: "腾讯电脑管家认证"
+      url: "https://guanjia.qq.com"
+      turnaround: "3-5 days"
+      
+    - name: "Huorong"
+      portal: "火绒安全认证"
+      url: "https://www.huorong.cn"
+      turnaround: "2-4 days"
+      
+    - name: "Kaspersky"
+      portal: "Kaspersky Security Network"
+      url: "https://ksd.kaspersky.com"
+      turnaround: "1-3 days"
+      
+    - name: "Symantec"
+      portal: "Symantec Security Response"
+      url: "https://symantec.com/security-response"
+      turnaround: "2-5 days"
+```
+
+**申请材料准备**：
+- 软件介绍文档（中文/英文）
+- 软件数字签名证书
+- 源代码安全扫描报告
+- 软件功能说明截图
+- 隐私政策声明
+- 官方联系方式
+
+**白名单申请文档模板**：
+
+```markdown
+# 杀软白名单申请材料
+
+## 1. 软件基本信息
+- 软件名称：Windows 应急响应工具 (ERT)
+- 版本号：v13.0
+- 软件类型：安全应急响应工具
+- 官方网址：待填写
+
+## 2. 软件功能说明
+[详细描述软件功能]
+
+## 3. 数字签名信息
+- 签名证书：EV 代码签名证书
+- 签名指纹：待填写
+- 签名时间：待填写
+
+## 4. 安全特性说明
+- 数据存储：本地 SQLite，不上传网络
+- 权限控制：只读采集，处置需二次确认
+- 审计日志：所有操作记录详细日志
+```
 
 ---
 
