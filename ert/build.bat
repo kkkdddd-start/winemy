@@ -1,7 +1,7 @@
 @echo off
 REM ERT (Windows Emergency Response Tool) Build Script
 
-setlocal enabledelayedexpansion
+setlocal
 
 REM Project paths
 set PROJECT_DIR=%~dp0
@@ -16,10 +16,10 @@ set VERSION=13.0.0
 REM Get build time using PowerShell (wmic is deprecated on Windows 11)
 for /f %%a in ('powershell -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'"') do set BUILD_TIME=%%a
 
-REM Set ldflags
-set LDFLAGS=-s -H=windowsgui -trimpath
-set LDFLAGS=!LDFLAGS! -X main.Version=%VERSION%
-set LDFLAGS=!LDFLAGS! -X main.BuildTime=%BUILD_TIME%
+REM Set ldflags (no -trimpath as it's not supported on Windows linker)
+set LDFLAGS=-s -H=windowsgui
+set LDFLAGS=%LDFLAGS% -X main.Version=%VERSION%
+set LDFLAGS=%LDFLAGS% -X main.BuildTime=%BUILD_TIME%
 
 REM Create output directory
 if not exist "%OUTPUT_DIR%" (
@@ -61,9 +61,6 @@ echo [INFO] Cleaning old build artifacts...
 if exist "%GUI_OUTPUT%" del /q "%GUI_OUTPUT%"
 
 echo [INFO] Compiling Go code...
-cd /d "%PROJECT_DIR%"
-set GOOS=windows
-set GOARCH=amd64
 go build -ldflags "%LDFLAGS%" -o "%GUI_OUTPUT%" ./cmd/gui/
 
 if exist "%GUI_OUTPUT%" (
@@ -83,9 +80,6 @@ echo [INFO] Cleaning old build artifacts...
 if exist "%CLI_OUTPUT%" del /q "%CLI_OUTPUT%"
 
 echo [INFO] Compiling CLI code...
-cd /d "%PROJECT_DIR%"
-set GOOS=windows
-set GOARCH=amd64
 go build -ldflags "%LDFLAGS%" -o "%CLI_OUTPUT%" ./cmd/cli/
 
 if exist "%CLI_OUTPUT%" (
