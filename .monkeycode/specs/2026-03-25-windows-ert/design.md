@@ -1077,29 +1077,377 @@ CREATE TABLE activity (
 | 日志导出 | 导出为 JSON/CSV | P1 |
 | 告警规则 | 恶意事件关键词告警 | P1 |
 | SQL Server 日志 | MSSQL 日志文件分析 | P1 |
+| **自定义路径** | 用户指定日志文件/目录路径 | P0 |
+| **一键分析** | 自动分析可疑日志并导出报告 | P0 |
 
 **支持格式**：
 - EVTX: Windows 事件日志 XML 格式
 - ETL: 事件跟踪日志
+- LOG: 文本格式日志
+- CSV: CSV 格式日志
+
+**路径配置**：
+
+```go
+type LogSource struct {
+    Type        string   // "system" | "security" | "application" | "custom"
+    Path        string   // 自定义路径
+    Enabled     bool
+}
+
+type LogPaths struct {
+    // 默认路径（无输入时使用）
+    DefaultPaths []LogSource
+    
+    // 自定义路径（用户指定）
+    CustomPaths  []LogSource
+}
+
+// Windows 默认日志路径
+var DefaultWindowsLogPaths = []string{
+    `C:\Windows\System32\winevt\Logs\Security.evtx`,
+    `C:\Windows\System32\winevt\Logs\System.evtx`,
+    `C:\Windows\System32\winevt\Logs\Application.evtx`,
+}
+
+// SQL Server 默认日志路径
+var DefaultSQLServerLogPaths = []string{
+    `C:\Program Files\Microsoft SQL Server\MSSQL\Log\ERRORLOG`,
+    `C:\Program Files\Microsoft SQL Server\MSSQL\Log\LOGFILE.trc`,
+    `C:\Program Files\Microsoft SQL Server\MSSQL15.INST01\Log\ERRORLOG`,
+}
+
+// IIS 默认日志路径
+var DefaultIISLogPaths = []string{
+    `C:\inetpub\logs\LogFiles\W3SVC1`,
+    `C:\Windows\System32\LogFiles\IIS`,
+}
+```
+
+**自定义路径配置**：
+
+```yaml
+modules:
+  logging:
+    # 默认使用系统日志
+    use_default_paths: true
+    
+    # 自定义日志路径列表
+    custom_paths: []
+    # 示例:
+    # custom_paths:
+    #   - "D:\Logs\Security.evtx"
+    #   - "E:\IISLogs\W3SVC1\u_ex*.log"
+    #   - "C:\AppData\MyApp\log.txt"
+    
+    # 是否递归扫描子目录
+    recursive: false
+```
+
+**一键分析功能**：
+
+```go
+type OneKeyAnalyzer struct {
+    rules     *SuspiciousRules
+    exporter  *ReportExporter
+}
+
+type SuspiciousRules struct {
+    // 高危事件 ID 列表
+    HighRiskEventIDs []int
+    
+    // 可疑关键词列表
+    SuspiciousKeywords []string
+    
+    // 可疑时间范围（深夜）
+    SuspiciousHours []int  // 如 0,1,2,3,4
+    
+    // 失败阈值（短时间内多次失败）
+    FailureThreshold int
+    FailureWindow    time.Duration
+}
+
+func NewDefaultSuspiciousRules() *SuspiciousRules {
+    return &SuspiciousRules{
+        HighRiskEventIDs: []int{
+            // 账户异常
+            4625,  // 登录失败
+            4720,  // 账户创建
+            4726,  // 账户删除
+            4732,  // 添加到管理员组
+            4740,  // 账户锁定
+            // 进程异常
+            4688,  // 进程创建（需结合命令行分析）
+            // 服务异常
+            7045,  // 新服务安装
+            // Kerberos 异常
+            4768,  // TGT 请求（需结合分析）
+            4771,  // 预认证失败
+        },
+        SuspiciousKeywords: []string{
+            "mimikatz", "pwdump", "procdump", "lsass",
+            "powershell -enc", "IEX", "DownloadString",
+            "net user /add", "net localgroup administrators",
+            "reg add HKLM", "schtasks /create",
+            "wmic process call create", "vssadmin delete",
+        },
+        SuspiciousHours: []int{0, 1, 2, 3, 4},
+        FailureThreshold: 5,
+        FailureWindow:    10 * time.Minute,
+    }
+}
+```
+
+**一键分析流程**：
+
+```go
+func (a *OneKeyAnalyzer) Analyze(ctx context.Context, sessionID string) (*AnalysisReport, error) {
+    report := &AnalysisReport{
+        SessionID:   sessionID,
+        Timestamp:   time.Now(),
+        Summary:     &AnalysisSummary{},
+        Alerts:      []SecurityAlert{},
+    }
+    
+    // 1. 采集日志
+    logs, err := a.collectLogs(ctx)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 2. 并发分析
+    eg, ctx := errgroup.WithContext(ctx)
+    
+    eg.Go(func() error {
+        report.Summary.HighRiskEvents = a.findHighRiskEvents(logs)
+        return nil
+    })
+    
+    eg.Go(func() error {
+        report.Summary.SuspiciousActivities = a.findSuspiciousActivities(logs)
+        return nil
+    })
+    
+    eg.Go(func() error {
+        report.Summary.UnusualTimeActivities = a.findUnusualTimeActivities(logs)
+        return nil
+    })
+    
+    eg.Go(func() error {
+        report.Summary.AccountAnomalies = a.findAccountAnomalies(logs)
+        return nil
+    })
+    
+    eg.Go(func() error {
+        report.Summary.BruteForceAttempts = a.findBruteForceAttempts(logs)
+        return nil
+    })
+    
+    eg.Wait()
+    
+    // 3. 生成告警
+    report.Alerts = a.generateAlerts(report.Summary)
+    
+    // 4. 计算风险评分
+    report.RiskScore = a.calculateRiskScore(report.Summary)
+    
+    return report, nil
+}
+```
+
+**分析报告结构**：
+
+```go
+type AnalysisReport struct {
+    SessionID          string           `json:"session_id"`
+    Timestamp          time.Time        `json:"timestamp"`
+    RiskScore          int              `json:"risk_score"`         // 0-100
+    RiskLevel          string           `json:"risk_level"`        // low/medium/high/critical
+    Summary            *AnalysisSummary  `json:"summary"`
+    Alerts             []SecurityAlert  `json:"alerts"`
+    Timeline           []TimelineEvent  `json:"timeline"`          // 攻击时间线
+    Recommendations    []string         `json:"recommendations"`   // 处置建议
+}
+
+type AnalysisSummary struct {
+    TotalEvents        int                `json:"total_events"`
+    AnalyzedEvents     int                `json:"analyzed_events"`
+    HighRiskEvents     []EventLog         `json:"high_risk_events"`
+    SuspiciousActivities []EventLog       `json:"suspicious_activities"`
+    UnusualTimeActivities []EventLog      `json:"unusual_time_activities"`
+    AccountAnomalies   []EventLog        `json:"account_anomalies"`
+    BruteForceAttempts []BruteForceAttempt `json:"brute_force_attempts"`
+    TopAttackers       []IPStat           `json:"top_attackers"`     // 攻击来源 Top
+    TopTargets         []AccountStat      `json:"top_targets"`       // 攻击目标 Top
+}
+
+type SecurityAlert struct {
+    ID          string    `json:"id"`
+    Time        time.Time `json:"time"`
+    AlertType   string    `json:"alert_type"`   // account_anomaly/brute_force/suspicious_process
+    Severity    string    `json:"severity"`     // high/medium/low
+    Title       string    `json:"title"`
+    Description string    `json:"description"`
+    Evidence    []string  `json:"evidence"`     // 相关事件列表
+    Recommendation string `json:"recommendation"`
+}
+
+type BruteForceAttempt struct {
+    TargetAccount  string    `json:"target_account"`
+    SourceIP       string    `json:"source_ip"`
+    Attempts       int       `json:"attempts"`
+    TimeRange      string    `json:"time_range"`
+    Status         string    `json:"status"`      // blocked/succeeded
+}
+```
+
+**一键导出功能**：
+
+```go
+type LogExporter struct {
+    formats []ExportFormat
+}
+
+type ExportFormat int
+const (
+    FormatJSON ExportFormat = iota
+    FormatCSV
+    FormatHTML
+    FormatPDF
+)
+
+func (e *LogExporter) ExportReport(report *AnalysisReport, format ExportFormat, outputPath string) error {
+    switch format {
+    case FormatJSON:
+        return e.exportJSON(report, outputPath)
+    case FormatCSV:
+        return e.exportCSV(report, outputPath)
+    case FormatHTML:
+        return e.exportHTML(report, outputPath)
+    case FormatPDF:
+        return e.exportPDF(report, outputPath)
+    }
+}
+
+func (e *LogExporter) exportJSON(report *AnalysisReport, outputPath string) error {
+    data, _ := json.MarshalIndent(report, "", "  ")
+    return os.WriteFile(outputPath, data, 0644)
+}
+
+func (e *LogExporter) exportHTML(report *AnalysisReport, outputPath string) error {
+    // 生成 HTML 报告，包含：
+    // - 风险评分仪表盘
+    // - 告警列表
+    // - 时间线视图
+    // - 统计图表
+    template := `<!DOCTYPE html>
+<html>
+<head>
+    <title>ERT 日志分析报告</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background: #333; color: white; padding: 20px; }
+        .risk-{{level}} { color: {{color}}; font-weight: bold; }
+        .alert { border-left: 4px solid {{color}}; padding: 10px; margin: 10px 0; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #4CAF50; color: white; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Windows 应急响应工具 - 日志分析报告</h1>
+        <p>生成时间: {{.Timestamp}}</p>
+        <p>风险等级: <span class="risk-{{.RiskLevel}}">{{.RiskLevel}}</span></p>
+    </div>
+    <h2>风险评分: {{.RiskScore}}/100</h2>
+    <h2>安全告警 ({{len .Alerts}})</h2>
+    {{range .Alerts}}
+    <div class="alert">
+        <h3>[{{.AlertType}}] {{.Title}}</h3>
+        <p>{{.Description}}</p>
+        <p><strong>建议:</strong> {{.Recommendation}}</p>
+    </div>
+    {{end}}
+</body>
+</html>`
+    // 渲染并写入文件
+}
+```
+
+**一键分析 UI 设计**：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  📋 日志分析 (M13)                                        [设置] [分析] │
+├─────────────────────────────────────────────────────────────────────────┤
+│  日志来源:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ ○ 使用系统日志 (默认路径)                                         │   │
+│  │ ● 自定义路径                                                       │   │
+│  │ ┌─────────────────────────────────────────────────────────────┐ │   │
+│  │ │ C:\Windows\System32\winevt\Logs\Security.evtx         [浏览] │ │   │
+│  │ └─────────────────────────────────────────────────────────────┘ │   │
+│  │ ┌─────────────────────────────────────────────────────────────┐ │   │
+│  │ │ D:\Logs\*.evtx                                          [浏览] │ │   │
+│  │ └─────────────────────────────────────────────────────────────┘ │   │
+│  │ [添加路径]                                                        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  分析选项:                                                              │
+│  [✓] 高危事件检测    [✓] 可疑行为分析    [✓] 异常时间检测              │
+│  [✓] 账户异常检测    [✓] 暴力破解检测    [ ] 关键字搜索               │
+│                                                                        │
+│  关键字: [________________________] (可选)                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ [一键分析]                                                       │   │
+│  │                                                                  │   │
+│  │ 分析完成后自动显示报告，可选择导出格式:                            │   │
+│  │ [导出 JSON] [导出 CSV] [导出 HTML] [导出 PDF]                   │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  分析报告:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ 风险评分: ██████████████████████░░░░░ 78/100  (高风险)         │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ 摘要统计:                                                         │   │
+│  │ • 总事件数: 15,234                                               │   │
+│  │ • 高危事件: 23                                                    │   │
+│  │ • 可疑行为: 156                                                   │   │
+│  │ • 暴力破解: 3 次 (攻击者: 192.168.1.100)                        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ 告警列表:                                                         │   │
+│  │ [2026-03-25 02:30:12] [高] 检测到账户暴力破解尝试                 │   │
+│  │ [2026-03-25 02:35:00] [高] 检测到管理员账户异常登录               │   │
+│  │ [2026-03-25 03:00:00] [中] 检测到可疑进程创建                    │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  [导出报告]                                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 **数据来源**：
-- WMI: `Win32_NtLogEvent`
+- Windows 事件日志 API: `Win32_NtLogEvent`
 - `github.com/yusufpapurcu/evtx` (EVTX 解析)
+- Windows Event Log API (go-win32)
 
-**Windows 事件日志 ID 定义**：
+**SQLite 存储**：
 
 ```sql
 -- 事件日志表
 CREATE TABLE event_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL,        -- 事件 ID (如 4624)
-    event_type TEXT NOT NULL,         -- 事件类型
-    level TEXT NOT NULL,              -- 级别: Information, Warning, Error, Critical
-    source TEXT NOT NULL,             -- 来源: Security, System, Application
-    channel TEXT NOT NULL,            -- 通道: Security, System, Application
-    computer TEXT NOT NULL,           -- 计算机名
-    time_created TEXT NOT NULL,       -- 事件时间
-    raw_xml TEXT,                     -- 原始 XML
+    event_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    level TEXT NOT NULL,
+    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    computer TEXT NOT NULL,
+    time_created TEXT NOT NULL,
+    raw_xml TEXT,
     session_id TEXT NOT NULL
 );
 
@@ -1107,154 +1455,37 @@ CREATE INDEX idx_event_logs_event_id ON event_logs(event_id);
 CREATE INDEX idx_event_logs_source ON event_logs(source);
 CREATE INDEX idx_event_logs_level ON event_logs(level);
 CREATE INDEX idx_event_logs_time ON event_logs(time_created);
-```
 
-**常用安全事件 ID 速查表**：
-
-| 事件 ID | 事件名称 | 说明 | 风险 |
-|---------|----------|------|------|
-| 4624 | 账户登录成功 | 登录成功 | 中 |
-| 4625 | 账户登录失败 | 登录失败 | 高 |
-| 4627 | 账户登录成功（组身份） | 组身份验证 | 低 |
-| 4634 | 账户注销 | 用户注销 | 低 |
-| 4647 | 用户启动注销 | 交互式注销 | 低 |
-| 4672 | 分配特殊权限 | 管理员登录 | 高 |
-| 4688 | 进程创建 | 新进程创建 | 中 |
-| 4689 | 进程终止 | 进程退出 | 低 |
-| 4697 | 安全事件创建 | 服务安装 | 高 |
-| 4698 | 计划任务创建 | 计划任务创建 | 高 |
-| 4702 | 计划任务更新 | 计划任务修改 | 中 |
-| 4713 | Kerberos 策略更改 | 域策略变更 | 中 |
-| 4719 | 审核策略更改 | 安全策略变更 | 中 |
-| 4720 | 账户创建 | 新建账户 | 高 |
-| 4722 | 账户启用 | 启用账户 | 中 |
-| 4723 | 尝试密码更改 | 尝试改密 | 中 |
-| 4724 | 尝试重置密码 | 尝试重置密码 | 高 |
-| 4725 | 账户禁用 | 禁用账户 | 中 |
-| 4726 | 账户删除 | 删除账户 | 高 |
-| 4732 | 添加组成员 | 添加到管理员组 | 高 |
-| 4733 | 删除组成员 | 从组移除 | 高 |
-| 4740 | 账户锁定 | 账户被锁 | 中 |
-| 4765 | SID 历史添加 | SID 历史修改 | 高 |
-| 4767 | 账户解锁 | 账户解锁 | 低 |
-| 4768 | Kerberos TGT 请求 | Kerberos 认证 | 低 |
-| 4769 | Kerberos 服务票据请求 | SPN 请求 | 中 |
-| 4771 | Kerberos 预认证失败 | 认证失败 | 高 |
-| 4772 | Kerberos 预认证失败 | AS-REP Roasting | 高 |
-| 4776 | 域账户凭证验证 | NTLM 验证 | 低 |
-
-**常用系统事件 ID 速查表**：
-
-| 事件 ID | 事件名称 | 说明 |
-|---------|----------|------|
-| 1 | 启动 | 系统启动 |
-| 12 | 系统启动 | 系统启动 |
-| 13 | 系统关闭 | 系统关闭 |
-| 6005 | 事件日志服务启动 | 系统事件日志启动 |
-| 6006 | 事件日志服务停止 | 系统事件日志停止 |
-| 7045 | 服务安装 | 新服务安装 |
-
-**FTS5 全文搜索设计**：
-
-```sql
--- 创建 FTS5 虚拟表
-CREATE VIRTUAL TABLE logs_fts USING fts5(
-    event_id,
-    message,
-    time_created,
-    source,
-    session_id,
-    tokenize='porter unicode61'
-);
-
--- 搜索查询示例
--- 搜索包含"登录失败"的事件
-SELECT * FROM event_logs WHERE id IN (
-    SELECT rowid FROM logs_fts WHERE logs_fts MATCH '登录失败'
-);
-
--- 搜索事件 ID 4624 或 4625
-SELECT * FROM event_logs WHERE event_id IN (4624, 4625);
-
--- 组合搜索: 事件 ID + 时间范围 + 关键词
-SELECT * FROM event_logs 
-WHERE event_id = 4624 
-AND time_created BETWEEN '2026-03-01' AND '2026-03-25'
-AND id IN (
-    SELECT rowid FROM logs_fts WHERE logs_fts MATCH ' administrator '
-);
-```
-
-**搜索语法**：
-
-| 搜索类型 | 示例 | 说明 |
-|----------|------|------|
-| 精确匹配 | `4624` | 搜索指定事件 ID |
-| 模糊匹配 | `登录*` | 搜索以"登录"开头的内容 |
-| 布尔搜索 | `登录 AND 失败` | 同时包含两个关键词 |
-| 或搜索 | `登录 OR 注销` | 包含任一关键词 |
-| 排除搜索 | `登录 NOT guest` | 包含"登录"但不包含"guest" |
-| 短语搜索 | `"账户登录成功"` | 精确短语匹配 |
-
-**性能优化**：
-
-| 优化项 | 实现方式 | 预期效果 |
-|--------|----------|----------|
-| 分库存储 | 按来源分表 (security, system, application) | 减少单表数据量 |
-| 索引优化 | event_id + time_created 复合索引 | 加速时间范围+ID 查询 |
-| 分页加载 | LIMIT/OFFSET 分页 | 支持大结果集展示 |
-| 异步解析 | Goroutine 解析 EVTX | 不阻塞主流程 |
-| 流式写入 | Batch Insert | 减少数据库 IO |
-| 内存限制 | 单次解析内存限制 500MB | 防止内存溢出 |
-
-**SQL Server 日志分析**：
-
-```go
-// SQL Server 日志类型
-type SQLServerLogType int
-const (
-    SQLServerErrorLog   SQLServerLogType = 1  // 错误日志
-    SQLServerAgentLog   SQLServerLogType = 2  // Agent 日志
-)
-
-type SQLServerLogEntry struct {
-    Timestamp      time.Time `json:"timestamp"`
-    LogType       string    `json:"log_type"`
-    ProcessInfo   string    `json:"process_info"`    // SPID、信息源
-    Message       string    `json:"message"`          // 日志消息
-    Severity      int       `json:"severity"`         // 严重程度
-    SessionID     int       `json:"session_id"`
-}
-
-func (l *LoggingModule) ParseSQLServerLog(path string) ([]SQLServerLogEntry, error) {
-    // SQL Server 日志解析逻辑
-    // 默认路径: C:\Program Files\Microsoft SQL Server\MSSQL\Log\ERRORLOG
-}
-```
-
-**日志分析 SQLite 表**：
-
-```sql
--- SQL Server 日志表
-CREATE TABLE sqlserver_logs (
+-- 分析报告表
+CREATE TABLE analysis_reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    log_type TEXT NOT NULL,          -- errorlog, agentlog
-    timestamp TEXT NOT NULL,
-    process_info TEXT,
-    message TEXT NOT NULL,
-    severity INTEGER,
-    session_id INTEGER,
-    session_id TEXT NOT NULL
+    session_id TEXT NOT NULL,
+    risk_score INTEGER,
+    risk_level TEXT,
+    report_path TEXT,
+    created_at TEXT NOT NULL
 );
 
-CREATE INDEX idx_sqlserver_timestamp ON sqlserver_logs(timestamp);
-CREATE INDEX idx_sqlserver_severity ON sqlserver_logs(severity);
+-- 安全告警表
+CREATE TABLE security_alerts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    alert_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    evidence TEXT,
+    recommendation TEXT,
+    time TEXT NOT NULL,
+    acknowledged INTEGER DEFAULT 0
+);
 ```
 
 **性能要求**：
 - 100MB EVTX < 30 秒
 - 1GB EVTX < 5 分钟（流式解析）
 - 日志搜索 百万级 < 1 秒（FTS5 索引）
+- 一键分析 < 2 分钟（10GB 日志）
 
 ---
 
