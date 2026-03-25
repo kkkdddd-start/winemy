@@ -603,7 +603,260 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 - 通过 Wails `Emit` 推送实时数据到前端
 - ECharts 绑定实时数据流
 
-**配置项**：
+**告警规则引擎设计**：
+
+```go
+type AlertRule struct {
+    ID          string      `json:"id"`
+    Name        string      `json:"name"`
+    ModuleID    int         `json:"module_id"`     // 关联模块
+    Condition   AlertCondition `json:"condition"`   // 触发条件
+    Threshold  float64     `json:"threshold"`      // 阈值
+    Duration    time.Duration `json:"duration"`      // 持续时间
+    Severity    RiskLevel   `json:"severity"`      // 严重程度
+    Enabled     bool        `json:"enabled"`
+    Actions     []AlertAction `json:"actions"`     // 触发动作
+}
+
+type AlertCondition int
+const (
+    ConditionGreater   AlertCondition = 0  // 大于
+    ConditionLess      AlertCondition = 1  // 小于
+    ConditionEqual     AlertCondition = 2  // 等于
+    ConditionContains  AlertCondition = 3  // 包含
+    ConditionMatch     AlertCondition = 4  // 正则匹配
+)
+
+type AlertAction int
+const (
+    ActionLog       AlertAction = 0  // 记录日志
+    ActionNotify    AlertAction = 1  // 前端通知
+    ActionSound     AlertAction = 2  // 声音提醒
+    ActionExecute   AlertAction = 3  // 执行命令
+)
+
+type AlertEvent struct {
+    ID        string    `json:"id"`
+    RuleID    string    `json:"rule_id"`
+    RuleName  string    `json:"rule_name"`
+    Severity  RiskLevel `json:"severity"`
+    Message   string    `json:"message"`
+    Value     float64   `json:"value"`      // 触发时的值
+    Threshold float64   `json:"threshold"`   // 阈值
+    Timestamp time.Time `json:"timestamp"`
+    ModuleID  int       `json:"module_id"`
+    SessionID string    `json:"session_id"`
+}
+```
+
+**告警引擎核心逻辑**：
+
+```go
+type AlertEngine struct {
+    rules     map[string]*AlertRule
+    history   *ristretto.Cache
+    notifier  *Notifier
+    evaluator *Evaluator
+}
+
+func (ae *AlertEngine) Evaluate(moduleID int, data map[string]interface{}) {
+    for _, rule := range ae.rules {
+        if rule.ModuleID != moduleID || !rule.Enabled {
+            continue
+        }
+        
+        select {
+        case <-time.After(rule.Duration):
+            value, ok := ae.getMetricValue(data, rule.Condition.Metric)
+            if !ok {
+                continue
+            }
+            
+            if ae.checkCondition(value, rule.Condition, rule.Threshold) {
+                ae.trigger(rule, value)
+            }
+        default:
+            // 超时检查
+        }
+    }
+}
+
+func (ae *AlertEngine) checkCondition(value float64, cond AlertCondition, threshold float64) bool {
+    switch cond {
+    case ConditionGreater:
+        return value > threshold
+    case ConditionLess:
+        return value < threshold
+    case ConditionEqual:
+        return value == threshold
+    case ConditionContains:
+        return strings.Contains(fmt.Sprintf("%f", value), fmt.Sprintf("%f", threshold))
+    case ConditionMatch:
+        re := regexp.MustCompile(fmt.Sprintf("%f", threshold))
+        return re.MatchString(fmt.Sprintf("%f", value))
+    }
+    return false
+}
+```
+
+**内置告警规则模板**：
+
+```yaml
+alert_rules:
+  # 系统资源告警
+  - id: "cpu_high"
+    name: "CPU 使用率过高"
+    module_id: 7
+    condition:
+      metric: "cpu_percent"
+      type: greater
+    threshold: 90
+    duration: 30s
+    severity: high
+    enabled: true
+    actions: [log, notify]
+    
+  - id: "memory_high"
+    name: "内存使用率过高"
+    module_id: 7
+    condition:
+      metric: "memory_percent"
+      type: greater
+    threshold: 85
+    duration: 30s
+    severity: high
+    enabled: true
+    actions: [log, notify]
+    
+  - id: "disk_high"
+    name: "磁盘使用率过高"
+    module_id: 7
+    condition:
+      metric: "disk_percent"
+      type: greater
+    threshold: 90
+    duration: 1m
+    severity: medium
+    enabled: true
+    actions: [log]
+    
+  # 进程告警
+  - id: "new_suspicious_process"
+    name: "发现可疑新进程"
+    module_id: 2
+    condition:
+      metric: "process.name"
+      type: match
+    threshold: "(cmd|powershell|wscript|cscript).*\.tmp"
+    duration: 0s
+    severity: high
+    enabled: true
+    actions: [log, notify, sound]
+    
+  # 网络告警
+  - id: "external_connection"
+    name: "可疑外部连接"
+    module_id: 3
+    condition:
+      metric: "network.remote_addr"
+      type: match
+    threshold: "(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)"
+    duration: 0s
+    severity: medium
+    enabled: true
+    actions: [log]
+    
+  - id: "unusual_port"
+    name: "异常端口监听"
+    module_id: 3
+    condition:
+      metric: "network.local_port"
+      type: match
+    threshold: "(4444|5555|6666|7777|8888|9999)"
+    duration: 0s
+    severity: high
+    enabled: true
+    actions: [log, notify]
+    
+  # 安全事件告警
+  - id: "login_failure"
+    name: "登录失败"
+    module_id: 13
+    condition:
+      metric: "event.event_id"
+      type: equal
+    threshold: 4625
+    duration: 0s
+    severity: medium
+    enabled: true
+    actions: [log]
+    
+  - id: "admin_login"
+    name: "管理员登录"
+    module_id: 13
+    condition:
+      metric: "event.event_id"
+      type: equal
+    threshold: 4672
+    duration: 0s
+    severity: high
+    enabled: true
+    actions: [log, notify]
+    
+  - id: "process_creation"
+    name: "可疑进程创建"
+    module_id: 13
+    condition:
+      metric: "event.event_id"
+      type: equal
+    threshold: 4688
+    duration: 0s
+    severity: medium
+    enabled: true
+    actions: [log]
+```
+
+**告警 SQLite 存储**：
+
+```sql
+CREATE TABLE alert_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    module_id INTEGER NOT NULL,
+    condition_type INTEGER NOT NULL,
+    condition_metric TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    duration INTEGER NOT NULL,
+    severity INTEGER NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    actions TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE alert_events (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    rule_name TEXT NOT NULL,
+    severity INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    value REAL,
+    threshold REAL,
+    timestamp TEXT NOT NULL,
+    module_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    acknowledged INTEGER DEFAULT 0,
+    acknowledged_by TEXT,
+    acknowledged_at TEXT,
+    FOREIGN KEY (rule_id) REFERENCES alert_rules(id)
+);
+
+CREATE INDEX idx_alert_events_timestamp ON alert_events(timestamp);
+CREATE INDEX idx_alert_events_severity ON alert_events(severity);
+CREATE INDEX idx_alert_events_session ON alert_events(session_id);
+```
+
+**告警配置项**：
+
 ```yaml
 monitor:
   interval: 1s        # 采集间隔
@@ -611,7 +864,16 @@ monitor:
   alerts:
     cpu_threshold: 90  # CPU 告警阈值
     mem_threshold: 85  # 内存告警阈值
-```
+    disk_threshold: 90  # 磁盘告警阈值
+    
+alerting:
+  enabled: true
+  max_events: 1000       # 内存中最大告警事件数
+  retention_days: 30      # 告警事件保留天数
+  notification:
+    sound: true
+    popup: true
+  ```
 
 ---
 
@@ -3701,6 +3963,298 @@ wails build
 
 # 可选 UPX 压缩
 upx --best ert.exe
+```
+
+---
+
+## CLI 版本设计
+
+### 概述
+
+CLI 版本（Command Line Interface）面向无 GUI 环境的 Windows Server，提供核心采集功能的命令行支持。支持静默采集、脚本自动化、远程执行等场景。
+
+### 编译方式
+
+```bash
+# CLI 版本编译
+go build -ldflags="-s -w -H=windowsgui -trimpath -buildvcs=false" -o ert-cli.exe ./cmd/cli
+
+# 或者通过 build tags 区分
+go build -tags="cli" -ldflags="-s -w -H=windowsgui" -o ert.exe
+```
+
+### 命令行参数
+
+```powershell
+# 完整帮助
+ert-cli.exe --help
+
+# 输出示例
+ERT CLI v13.0
+Windows Emergency Response Tool - Command Line Interface
+
+Usage:
+  ert-cli [command] [flags]
+
+Commands:
+  collect      采集指定模块数据
+  export       导出数据报告
+  triage       快速采集关键指标 (Triage 模式)
+  check        执行单项检查
+  version      显示版本信息
+
+Flags:
+  --output, -o     输出目录 (默认: ./output)
+  --format, -f      输出格式: json, csv, html (默认: json)
+  --session         会话 ID (默认: 自动生成)
+  --silent, -s      静默模式，不输出进度
+  --verbose, -v     详细输出
+  --help, -h        显示帮助
+```
+
+### 采集命令
+
+```powershell
+# 采集所有模块
+ert-cli.exe collect --all
+
+# 采集指定模块 (可指定多个)
+ert-cli.exe collect --module process --module network --module registry
+
+# Triage 模式 - 快速采集关键指标
+ert-cli.exe triage --output ./triage
+
+# 指定输出格式
+ert-cli.exe collect --module process --format html --output ./report
+
+# 静默模式
+ert-cli.exe collect --all --silent --output ./output
+```
+
+**支持采集的模块列表**：
+
+| 模块 ID | 模块名称 | CLI 支持 | 说明 |
+|---------|----------|----------|------|
+| M1 | 系统概览 | ✅ | 基础系统信息 |
+| M2 | 进程管理 | ✅ | 进程列表 |
+| M3 | 网络分析 | ✅ | 网络连接 |
+| M4 | 注册表分析 | ✅ | 关键注册表项 |
+| M5 | 服务管理 | ✅ | 服务列表 |
+| M6 | 计划任务 | ✅ | 计划任务列表 |
+| M8 | 系统补丁 | ✅ | 已安装补丁 |
+| M9 | 软件列表 | ✅ | 已安装软件 |
+| M11 | 文件系统 | ✅ | 文件枚举 |
+| M13 | 日志分析 | ✅ | 事件日志 |
+| M14 | 账户分析 | ✅ | 用户账户 |
+
+**不支持 CLI 的模块**（需要 GUI）：
+
+| 模块 ID | 模块名称 | 原因 |
+|---------|----------|------|
+| M7 | 系统监控 | 需要实时图表 |
+| M10 | 内核分析 | 需要驱动 |
+| M15 | 内存取证 | 需要交互确认 |
+| M16 | 威胁检测 | 需要 GUI 展示结果 |
+| M17 | 应急处置 | 需要二次确认 |
+| M18-M25 | 其他模块 | 需要 GUI 交互 |
+
+### Triage 模式
+
+Triage 模式面向应急场景，快速采集最关键指标，耗时控制在 1 分钟内：
+
+```powershell
+# Triage 模式采集
+ert-cli.exe triage --output ./triage-$(Get-Date -Format "yyyyMMdd-HHmmss")
+
+# Triage 输出内容
+# ├── system_info.json       # 系统基本信息
+# ├── processes.json        # 进程列表 (Top 20 by CPU/Memory)
+# ├── network.json          # 网络连接
+# ├── services.json         # 运行中的服务
+# ├── autostart.json        # 自启动项
+# ├── recent_logs.json       # 最近安全事件
+# └── summary.txt           # Triage 摘要
+```
+
+**Triage 核心采集项**：
+
+```go
+type TriageConfig struct {
+    MaxProcessCount   int = 20        // 最大进程数
+    MaxLogEvents      int = 100       // 最大日志事件数
+    Timeout           time.Duration = 1 * time.Minute
+}
+
+func (t *TriageCollector) Collect(ctx context.Context) error {
+    eg, _ := errgroup.WithContext(ctx)
+    
+    // 并发采集
+    eg.Go(func() error { return t.collectSystemInfo() })
+    eg.Go(func() error { return t.collectTopProcesses() })
+    eg.Go(func() error { return t.collectNetworkConnections() })
+    eg.Go(func() error { return t.collectRunningServices() })
+    eg.Go(func() error { return t.collectAutostartItems() })
+    eg.Go(func() error { return t.collectRecentSecurityLogs() })
+    
+    return eg.Wait()
+}
+```
+
+### 导出命令
+
+```powershell
+# 导出报告
+ert-cli.exe export --session <session-id> --format html --output ./report
+
+# 导出指定模块数据
+ert-cli.exe export --module process --module network --format json --output ./data
+
+# 导出原始数据
+ert-cli.exe export --session <session-id> --raw --output ./raw-data
+```
+
+### 检查命令
+
+```powershell
+# 执行单项安全检查
+ert-cli.exe check --type suspicious_processes
+ert-cli.exe check --type unusual_ports
+ert-cli.exe check --type weak_services
+ert-cli.exe check --type recent_privilege_escalation
+
+# 检查类型列表
+# suspicious_processes  - 可疑进程
+# unusual_ports         - 异常端口
+# weak_services         - 弱配置服务
+# privilege_escalation  - 提权行为
+# lateral_movement      - 横向移动痕迹
+# persistence          - 持久化痕迹
+```
+
+### 输出格式
+
+**JSON 输出**：
+
+```json
+{
+  "version": "13.0",
+  "session_id": "uuid-here",
+  "timestamp": "2026-03-25T10:00:00Z",
+  "hostname": "WORKSTATION-01",
+  "module": "process",
+  "data": [
+    {
+      "pid": 1234,
+      "name": "notepad.exe",
+      "path": "C:\\Windows\\System32\\notepad.exe",
+      "cpu_percent": 0.5,
+      "memory_bytes": 15000000
+    }
+  ]
+}
+```
+
+**CSV 输出**：
+
+```csv
+# 进程数据
+pid,name,path,cpu_percent,memory_bytes
+1234,notepad.exe,C:\Windows\System32\notepad.exe,0.5,15000000
+
+# 网络数据
+protocol,local_addr,local_port,remote_addr,remote_port,state
+TCP,192.168.1.100,445,192.168.1.1,3389,ESTABLISHED
+```
+
+### 自动化脚本示例
+
+**PowerShell 自动化**：
+
+```powershell
+# 定时采集脚本
+$ErrorActionPreference = "SilentlyContinue"
+
+$outputDir = "C:\ERT\Daily-$(Get-Date -Format 'yyyyMMdd')"
+$sessionId = [guid]::NewGuid().ToString()
+
+# 创建输出目录
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+# 执行采集
+& .\ert-cli.exe collect --all --session $sessionId --output $outputDir --silent
+
+# 压缩输出
+$zipPath = "$outputDir.zip"
+Compress-Archive -Path "$outputDir\*" -DestinationPath $zipPath -Force
+
+# 清理原始目录
+Remove-Item -Path $outputDir -Recurse -Force
+
+Write-Host "Report: $zipPath"
+```
+
+**计划任务注册**：
+
+```powershell
+# 创建每日采集计划任务
+$action = New-ScheduledTaskAction -Execute "C:\ERT\ert-cli.exe" -Argument "collect --all --output C:\ERT\Daily"
+$trigger = New-ScheduledTaskTrigger -Daily -At 3am
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask -TaskName "ERT-Daily-Collect" -Action $action -Trigger $trigger -Settings $settings -Description "Daily ERT data collection"
+```
+
+### 返回码
+
+| 返回码 | 说明 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 参数错误 |
+| 3 | 超时 |
+| 4 | 权限不足 |
+| 5 | 采集失败 |
+| 6 | 输出错误 |
+
+### 与 GUI 版本的差异
+
+| 特性 | GUI 版本 | CLI 版本 |
+|------|----------|----------|
+| 界面 | Wails + Vue3 | 无 |
+| 实时监控 | ✅ 支持 | ❌ 不支持 |
+| 交互式处置 | ✅ 支持 | ❌ 不支持 |
+| 模块数量 | 25 个 | ~12 个核心模块 |
+| 输出格式 | HTML/PDF/JSON | JSON/CSV |
+| 远程采集 | ❌ | ✅ (通过 WinRM/SSH) |
+| 脚本自动化 | ❌ | ✅ 支持 |
+| 启动时间 | < 3s | < 1s |
+
+### 架构设计
+
+CLI 版本复用 GUI 版本的核心采集模块，仅替换前端层：
+
+```go
+// cmd/cli/main.go
+func main() {
+    // 初始化核心引擎
+    engine := core.NewEngine()
+    engine.Init()
+    
+    // 解析命令行
+    cmd := parseFlags()
+    
+    // 执行命令
+    switch cmd.Name {
+    case "collect":
+        collectCmd(cmd, engine)
+    case "triage":
+        triageCmd(cmd, engine)
+    case "export":
+        exportCmd(cmd, engine)
+    case "check":
+        checkCmd(cmd, engine)
+    }
+}
 ```
 
 ---
