@@ -1221,31 +1221,1452 @@ codec:
 
 ---
 
-## 组件与接口
+## Wails 前后端接口设计
 
-### 模块注册中心
+### 接口设计原则
+
+- **类型安全**：使用 Wails 生成的 TypeScript 类型
+- **前后端分离**：前端通过 `window.go` 调用后端方法
+- **统一错误处理**：所有接口返回 `Result<T, Error>` 格式
+- **进度回调**：耗时操作通过事件推送进度
+
+### 后端暴露方法 (Go → Frontend)
 
 ```go
-type Module interface {
-    Name() string
-    ID() int
-    Priority() int
-    Init(ctx context.Context) error
-    Run(ctx context.Context) error
-    Stop() error
-}
-
-type Registry struct {
-    modules map[int]Module
-    mu      sync.RWMutex
-}
-
-func (r *Registry) Register(m Module) error
-func (r *Registry) Get(id int) (Module, error)
-func (r *Registry) List() []Module
-func (r *Registry) Enable(id int) error
-func (r *Registry) Disable(id int) error
+// Wails 方法注册
+func (a *App) CollectModule(ctx context.Context, moduleID int) error
+func (a *App) GetModuleData(ctx context.Context, moduleID int, query string) ([]map[string]interface{}, error)
+func (a *App) GetSessionData(ctx context.Context, sessionID string) (*SessionData, error)
+func (a *App) ExportReport(ctx context.Context, format string, sessionID string) (string, error)
+func (a *App) KillProcess(ctx context.Context, pid uint32) error
+func (a *App) StopService(ctx context.Context, name string) error
+func (a *App) Codec(ctx context.Context, input string, codecType string, encode bool) (string, error)
+func (a *App) DumpProcessMemory(ctx context.Context, pid uint32) (string, error)
+func (a *App) CompareSessions(ctx context.Context, session1, session2 string) (*CompareResult, error)
+func (a *App) GetSystemInfo(ctx context.Context) (*SystemInfo, error)
+func (a *App) GetConfig() *Config
+func (a *App) UpdateConfig(ctx context.Context, config *Config) error
 ```
+
+### 前端调用接口 (Frontend → Go)
+
+```typescript
+// 自动生成 TypeScript 接口
+import { Go } from '@wailsjs/go/main/App'
+
+// 系统信息
+const sysinfo = await Go.GetSystemInfo()
+
+// 采集模块
+await Go.CollectModule(2)  // 采集进程管理模块
+
+// 获取模块数据
+const processes = await Go.GetModuleData(2, '')
+
+// 进程查杀
+await Go.KillProcess(1234)
+
+// 编解码
+const decoded = await Go.Codec('SGVsbG8=', 'base64', false)
+
+// 内存 Dump
+const dumpPath = await Go.DumpProcessMemory(1234)
+
+// 会话对比
+const compareResult = await Go.CompareSessions('session1-id', 'session2-id')
+
+// 导出报告
+const reportPath = await Go.ExportReport('html', 'session-id')
+```
+
+### 事件推送 (Backend → Frontend)
+
+```go
+// 进度事件
+func (a *App) emitProgress(moduleID int, progress *Progress) {
+    runtime.EventsEmit(a.ctx, "ert:progress", map[string]interface{}{
+        "module_id": moduleID,
+        "current":   progress.Current,
+        "total":     progress.Total,
+        "message":   progress.Message,
+        "eta":       progress.ETA,
+    })
+}
+
+// 日志事件
+func (a *App) emitLog(level string, message string) {
+    runtime.EventsEmit(a.ctx, "ert:log", map[string]interface{}{
+        "level":   level,
+        "message": message,
+        "time":    time.Now().Format(time.RFC3339),
+    })
+}
+
+// 告警事件
+func (a *App) emitAlert(alert *Alert) {
+    runtime.EventsEmit(a.ctx, "ert:alert", alert)
+}
+
+// 实时监控数据
+func (a *App) emitMonitorData(data *MonitorData) {
+    runtime.EventsEmit(a.ctx, "ert:monitor", data)
+}
+```
+
+### 前端事件监听
+
+```typescript
+// 进度监听
+window.runtime.EventsOn('ert:progress', (data) => {
+  const { module_id, current, total, message, eta } = data
+  progressStore.update(module_id, { current, total, message, eta })
+})
+
+// 日志监听
+window.runtime.EventsOn('ert:log', (data) => {
+  const { level, message, time } = data
+  logStore.add({ level, message, time })
+})
+
+// 告警监听
+window.runtime.EventsOn('ert:alert', (alert) => {
+  notificationStore.add(alert)
+})
+
+// 实时监控数据
+window.runtime.EventsOn('ert:monitor', (data) => {
+  monitorStore.updateRealTime(data)
+})
+```
+
+### 统一响应格式
+
+```go
+type Result struct {
+    Success bool        `json:"success"`
+    Data    interface{} `json:"data,omitempty"`
+    Error   string      `json:"error,omitempty"`
+    Code    int         `json:"code"`
+}
+```
+
+---
+
+## 配置文件设计 (config.yaml)
+
+### 完整配置结构
+
+```yaml
+# ERT 配置文件
+app:
+  name: "Windows 应急响应工具"
+  version: "13.0"
+  debug: false
+  
+server:
+  host: "localhost"
+  port: 9277
+
+database:
+  # SQLite 配置
+  main:
+    path: "./data/ert.db"
+    wal_mode: true
+    busy_timeout: 5000
+    max_open_conns: 10
+  
+  # Ristretto 缓存配置
+  cache:
+    max_cost: 100 * 1024 * 1024  # 100MB
+    buffer_size: 32 * 1024       # 32KB
+    ttl: 10m                    # 10分钟
+
+storage:
+  # 数据存储目录
+  data_dir: "./data"
+  # 内存 Dump 存储目录
+  dump_dir: "./data/memory"
+  # 报告存储目录
+  report_dir: "./data/reports"
+  # 最大存储空间 (GB)
+  max_storage: 50
+
+concurrency:
+  # 线程池配置
+  high_priority_workers: 10    # P0 任务
+  medium_priority_workers: 5   # P1 任务
+  low_priority_workers: 2     # P2 任务
+  # 任务老化配置
+  aging:
+    max_wait_time: 5m
+    boost_threshold: 10
+    priority_boost: 2
+    check_interval: 30s
+
+timeout:
+  # 全局超时配置
+  global: 5m
+  # 各模块超时配置
+  module:
+    process: 30s
+    network: 30s
+    registry: 60s
+    filesystem: 300s
+    logging: 600s
+    memory_dump: 600s
+
+security:
+  # 只读模式 (默认开启)
+  readonly: true
+  # 处置功能
+  response:
+    require_confirmation: true
+    allow_kill_critical: false
+    backup_before_action: true
+    critical_processes:
+      - "lsass.exe"
+      - "winlogon.exe"
+      - "csrss.exe"
+      - "smss.exe"
+  # 审计日志
+  audit:
+    enabled: true
+    encrypt: true
+    retention_days: 90
+
+# 模块独立配置
+modules:
+  # M1 系统概览
+  system:
+    refresh_interval: 1s
+  
+  # M2 进程管理
+  process:
+    enable_tree: true
+    sign_threshold: 3  # 无签名次数阈值
+  
+  # M3 网络分析
+  network:
+    ipdb_path: "./data/ipdb/GeoLite2-City.mmdb"
+    ipdb_max_size: 20  # MB
+  
+  # M7 系统监控
+  monitor:
+    interval: 1s
+    history_size: 300
+    alerts:
+      cpu_threshold: 90
+      mem_threshold: 85
+      disk_threshold: 90
+  
+  # M11 文件系统
+  filesystem:
+    hash_algorithm: "sha256"
+    max_hash_size: 100 * 1024 * 1024 * 1024  # 100GB
+    buffer_size: 32 * 1024
+  
+  # M13 日志分析
+  logging:
+    supported_formats:
+      - "evtx"
+      - "etl"
+    max_file_size: 1 * 1024 * 1024 * 1024  # 1GB
+    charset: "utf-16le"
+  
+  # M15 内存取证
+  memory:
+    max_dump_size: 10 * 1024 * 1024 * 1024  # 10GB
+    block_size: 64 * 1024 * 1024            # 64MB
+  
+  # M16 威胁检测
+  threat:
+    ioc_path: "./data/threat/ioc.db"
+    enable_online: false
+  
+  # M22 报告导出
+  report:
+    template_path: "./data/templates"
+    default_format: "html"
+  
+  # M23 安全基线检查
+  baseline:
+    template: "cis_windows"
+  
+  # M25 编解码工具
+  codec:
+    enable_history: true
+    max_history: 100
+    retention_days: 7
+
+ui:
+  # 主题
+  theme: "dark"
+  # 语言
+  language: "zh-CN"
+  # 刷新频率
+  refresh_rate: 1s
+  # 表格配置
+  table:
+    page_size: 50
+    virtual_scroll: true
+  # 图表配置
+  chart:
+    animation: true
+    theme: "dark"
+  # 快捷键
+  shortcuts:
+    enabled: true
+
+log:
+  level: "info"  # debug, info, warn, error
+  file: "./logs/ert.log"
+  max_size: 500  # MB
+  max_backups: 5
+  max_age: 30    # days
+  compress: true
+```
+
+---
+
+## 会话管理设计
+
+### 会话生命周期
+
+```mermaid
+graph LR
+    A[创建会话] --> B[采集数据]
+    B --> C[数据存储]
+    C --> D[会话结束]
+    D --> E[生成报告]
+    E --> F[会话归档]
+    
+    B -.-> G[崩溃恢复]
+    G --> B
+    
+    A -.-> H[从检查点恢复]
+    H --> B
+```
+
+### 会话状态机
+
+```go
+type SessionState int
+const (
+    SessionStateCreated     SessionState = 0  // 已创建
+    SessionStateCollecting  SessionState = 1  // 采集中
+    SessionStatePaused      SessionState = 2  // 已暂停
+    SessionStateCompleted   SessionState = 3  // 已完成
+    SessionStateFailed      SessionState = 4  // 失败
+    SessionStateRecovering  SessionState = 5  // 恢复中
+)
+```
+
+### 会话数据结构
+
+```go
+type Session struct {
+    ID          string       `json:"id"`           // UUID
+    Hostname    string       `json:"hostname"`     // 主机名
+    Status      SessionState `json:"status"`       // 状态
+    StartedAt   time.Time    `json:"started_at"`   // 开始时间
+    EndedAt     time.Time    `json:"ended_at"`     // 结束时间
+    UserName    string       `json:"user_name"`    // 当前用户
+    OSVersion   string       `json:"os_version"`   // 系统版本
+    IsDomain    bool         `json:"is_domain"`    // 是否加域
+    Progress    float64      `json:"progress"`     // 进度百分比
+    ErrorMsg    string       `json:"error_msg"`    // 错误信息
+    Checkpoint  *Checkpoint  `json:"checkpoint"`   // 检查点
+}
+
+type SessionState struct {
+    SessionID    string                 `json:"session_id"`
+    ModuleID     int                    `json:"module_id"`
+    TaskID       string                 `json:"task_id"`
+    State        string                 `json:"state"`         // running, completed, failed
+    Progress     int                    `json:"progress"`      // 0-100
+    Result       interface{}            `json:"result"`        // 任务结果
+    Error        string                 `json:"error"`         // 错误信息
+    Version      int                    `json:"version"`       // 版本号，用于校验
+    UpdatedAt    time.Time              `json:"updated_at"`
+}
+```
+
+### 会话创建流程
+
+```go
+func (s *SessionManager) CreateSession(ctx context.Context) (*Session, error) {
+    session := &Session{
+        ID:        uuid.New().String(),
+        Hostname:  getHostname(),
+        Status:    SessionStateCreated,
+        StartedAt: time.Now(),
+        UserName:  getCurrentUser(),
+        OSVersion: getOSVersion(),
+        IsDomain:  isDomainJoined(),
+    }
+    
+    // 保存到数据库
+    if err := s.db.SaveSession(session); err != nil {
+        return nil, err
+    }
+    
+    // 创建初始检查点
+    checkpoint := &Checkpoint{
+        SessionID: session.ID,
+        Version:   1,
+        CreatedAt: time.Now(),
+    }
+    if err := s.checkpoint.Save(checkpoint); err != nil {
+        return nil, err
+    }
+    
+    return session, nil
+}
+```
+
+### 会话恢复流程
+
+```go
+func (s *SessionManager) RecoverSession(ctx context.Context) error {
+    // 检查是否有未完成的会话
+    checkpoint, err := s.checkpoint.Load()
+    if err != nil {
+        if err == ErrCheckpointNotFound {
+            return nil  // 无检查点，正常启动
+        }
+        return err
+    }
+    
+    // 验证检查点版本
+    if !checkpoint.IsValid() {
+        logger.Warn("Checkpoint version mismatch, starting fresh")
+        return nil
+    }
+    
+    session, err := s.db.GetSession(checkpoint.SessionID)
+    if err != nil {
+        return err
+    }
+    
+    // 更新状态为恢复中
+    session.Status = SessionStateRecovering
+    
+    // 恢复任务状态
+    for _, taskState := range checkpoint.Tasks {
+        if taskState.State == "running" {
+            taskState.State = "pending"  // 重置为待执行
+        }
+    }
+    
+    // 通知前端开始恢复
+    runtime.EventsEmit(s.ctx, "ert:session_recovering", session)
+    
+    // 继续执行未完成的任务
+    return s.ResumeSession(ctx, session)
+}
+```
+
+### 检查点持久化
+
+```go
+type Checkpoint struct {
+    SessionID  string            `json:"session_id"`
+    Tasks      map[string]*TaskState `json:"tasks"`
+    Version    int               `json:"version"`
+    CreatedAt  time.Time         `json:"created_at"`
+    FilePath   string            `json:"file_path"`  // 持久化到文件
+}
+
+func (cp *Checkpoint) Save(path string) error {
+    // 原子写入：先写.tmp，再 rename
+    tmpPath := path + ".tmp"
+    data, _ := json.Marshal(cp)
+    
+    if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+        return err
+    }
+    
+    return os.Rename(tmpPath, path)
+}
+
+func (cp *Checkpoint) Load(path string) error {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return err
+    }
+    
+    return json.Unmarshal(data, cp)
+}
+```
+
+---
+
+## 进度管理设计
+
+### 进度数据结构
+
+```go
+type Progress struct {
+    ModuleID   int       `json:"module_id"`   // 模块 ID
+    Current    int       `json:"current"`     // 当前进度
+    Total      int       `json:"total"`       // 总数
+    Percentage float64   `json:"percentage"`  // 百分比
+    Message    string    `json:"message"`     // 当前步骤描述
+    ETA        time.Time `json:"eta"`         // 预计完成时间
+    StartedAt  time.Time `json:"started_at"`  // 开始时间
+    UpdatedAt  time.Time `json:"updated_at"`  // 更新时间
+}
+```
+
+### 进度计算
+
+```go
+func (p *Progress) Calculate() float64 {
+    if p.Total == 0 {
+        return 0
+    }
+    return float64(p.Current) / float64(p.Total) * 100
+}
+
+func (p *Progress) EstimateETA() time.Time {
+    if p.Current == 0 {
+        return time.Time{}
+    }
+    
+    elapsed := time.Since(p.StartedAt)
+    rate := float64(p.Current) / elapsed.Seconds()
+    remaining := float64(p.Total - p.Current) / rate
+    
+    return time.Now().Add(time.Duration(remaining) * time.Second)
+}
+```
+
+### 进度推送机制
+
+```go
+type ProgressManager struct {
+    subscribers map[int]chan *Progress
+    mu         sync.RWMutex
+}
+
+func (pm *ProgressManager) Subscribe(moduleID int) chan *Progress {
+    ch := make(chan *Progress, 100)
+    pm.mu.Lock()
+    pm.subscribers[moduleID] = ch
+    pm.mu.Unlock()
+    return ch
+}
+
+func (pm *ProgressManager) Update(progress *Progress) {
+    progress.UpdatedAt = time.Now()
+    progress.Percentage = progress.Calculate()
+    progress.ETA = progress.EstimateETA()
+    
+    // 发送到订阅者
+    pm.mu.RLock()
+    if ch, ok := pm.subscribers[progress.ModuleID]; ok {
+        select {
+        case ch <- progress:
+        default:
+            // channel 满，跳过
+        }
+    }
+    pm.mu.RUnlock()
+    
+    // 发送到前端
+    runtime.EventsEmit(ctx, "ert:progress", progress)
+}
+```
+
+### 前端进度组件
+
+```typescript
+// stores/progress.ts
+export const useProgressStore = defineStore('progress', () => {
+  const progressMap = reactive<Map<number, Progress>>(new Map())
+  
+  function update(moduleId: number, data: Partial<Progress>) {
+    const current = progressMap.get(moduleId) || { moduleId, current: 0, total: 0, percentage: 0 }
+    Object.assign(current, data)
+    current.percentage = current.total > 0 ? (current.current / current.total) * 100 : 0
+    progressMap.set(moduleId, current)
+  }
+  
+  function getProgress(moduleId: number): Progress | undefined {
+    return progressMap.get(moduleId)
+  }
+  
+  // 监听后端进度事件
+  window.runtime.EventsOn('ert:progress', (data) => {
+    update(data.module_id, data)
+  })
+  
+  return { progressMap, update, getProgress }
+})
+```
+
+---
+
+## 攻击时间线重建
+
+### 时间线数据结构
+
+```go
+type TimelineEvent struct {
+    ID          string    `json:"id"`           // UUID
+    Timestamp   time.Time `json:"timestamp"`     // 事件时间
+    ModuleID    int       `json:"module_id"`     // 来源模块
+    EventType   string    `json:"event_type"`    // 事件类型
+    Severity    RiskLevel `json:"severity"`       // 严重程度
+    Title       string    `json:"title"`         // 事件标题
+    Description string    `json:"description"`   // 事件描述
+    Source      string    `json:"source"`        // 来源 (进程名、文件路径等)
+    Target      string    `json:"target"`        // 目标
+    Details     string    `json:"details"`       // 详细信息 (JSON)
+    SessionID   string    `json:"session_id"`    // 会话 ID
+}
+
+type EventType string
+const (
+    EventProcessCreate   EventType = "process_create"
+    EventProcessTerminate EventType = "process_terminate"
+    EventNetworkConnect   EventType = "network_connect"
+    EventRegistryModify   EventType = "registry_modify"
+    EventFileCreate       EventType = "file_create"
+    EventFileModify       EventType = "file_modify"
+    EventServiceStart     EventType = "service_start"
+    EventServiceStop      EventType = "service_stop"
+    EventUserLogin        EventType = "user_login"
+    EventUserLogout       EventType = "user_logout"
+    EventAlert           EventType = "alert"
+)
+```
+
+### 时间线重建引擎
+
+```go
+type TimelineEngine struct {
+    db     *sql.DB
+    events []TimelineEvent
+}
+
+func (t *TimelineEngine) Build(ctx context.Context, sessionID string) ([]TimelineEvent, error) {
+    // 从各模块收集事件
+    queries := []string{
+        // 进程创建事件
+        `SELECT p.start_time as timestamp, 'process_create' as type, 
+                p.name as source, p.path as details
+         FROM processes p WHERE p.session_id = ?`,
+        // 网络连接事件
+        `SELECT datetime('now') as timestamp, 'network_connect' as type,
+                n.local_addr || ':' || n.local_port as source,
+                n.remote_addr || ':' || n.remote_port as details
+         FROM network_connections n WHERE n.session_id = ?`,
+        // 注册表修改事件
+        `SELECT r.modified_time as timestamp, 'registry_modify' as type,
+                r.path as source, r.value as details
+         FROM registry_keys r WHERE r.session_id = ?`,
+    }
+    
+    events := []TimelineEvent{}
+    for _, query := range queries {
+        rows, err := t.db.QueryContext(ctx, query, sessionID)
+        if err != nil {
+            continue
+        }
+        // 解析并添加到 events
+    }
+    
+    // 按时间排序
+    sort.Slice(events, func(i, j int) bool {
+        return events[i].Timestamp.Before(events[j].Timestamp)
+    })
+    
+    return events, nil
+}
+```
+
+### 时间线展示
+
+```typescript
+// Vue Timeline 组件使用
+interface TimelineItem {
+  id: string
+  timestamp: string
+  type: string
+  title: string
+  description: string
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  icon: string
+}
+
+// 转换为 Vis-Timeline 格式
+function toTimelineData(events: TimelineEvent[]): TimelineItem[] {
+  return events.map(e => ({
+    id: e.id,
+    start: e.timestamp,
+    content: e.title,
+    className: `severity-${e.severity}`,
+    type: 'point'
+  }))
+}
+```
+
+---
+
+## 会话对比分析设计
+
+### 对比结果结构
+
+```go
+type CompareResult struct {
+    Session1       *SessionSummary    `json:"session1"`
+    Session2       *SessionSummary    `json:"session2"`
+    AddedProcesses []ProcessDTO       `json:"added_processes"`     // Session2 新增进程
+    RemovedProcesses []ProcessDTO     `json:"removed_processes"`   // Session2 移除进程
+    ModifiedProcesses []ProcessCompare `json:"modified_processes"`  // 变化的进程
+    
+    AddedNetwork   []NetworkConnDTO   `json:"added_network"`       // 新增网络连接
+    RemovedNetwork []NetworkConnDTO   `json:"removed_network"`     // 移除网络连接
+    
+    AddedRegistry  []RegistryKeyDTO   `json:"added_registry"`      // 新增注册表项
+    RemovedRegistry []RegistryKeyDTO  `json:"removed_registry"`    // 移除注册表项
+    
+    AddedServices  []ServiceDTO       `json:"added_services"`      // 新增服务
+    RemovedServices []ServiceDTO      `json:"removed_services"`    // 移除服务
+    
+    TimelineDiff   []TimelineEvent     `json:"timeline_diff"`        // 时间线差异
+    Summary        *CompareSummary    `json:"summary"`              // 摘要
+}
+
+type CompareSummary struct {
+    TotalAdded     int `json:"total_added"`
+    TotalRemoved   int `json:"total_removed"`
+    TotalModified  int `json:"total_modified"`
+    RiskIncreased  int `json:"risk_increased"`
+    RiskDecreased  int `json:"risk_decreased"`
+}
+```
+
+### 对比算法
+
+```go
+func (c *SessionComparator) Compare(ctx context.Context, s1, s2 *Session) (*CompareResult, error) {
+    result := &CompareResult{
+        Session1: c.summarize(s1),
+        Session2: c.summarize(s2),
+    }
+    
+    eg, _ := errgroup.WithContext(ctx)
+    
+    // 并发执行各项对比
+    eg.Go(func() error {
+        result.AddedProcesses, result.RemovedProcesses = c.compareProcesses(s1, s2)
+        return nil
+    })
+    eg.Go(func() error {
+        result.AddedNetwork, result.RemovedNetwork = c.compareNetwork(s1, s2)
+        return nil
+    })
+    eg.Go(func() error {
+        result.AddedRegistry, result.RemovedRegistry = c.compareRegistry(s1, s2)
+        return nil
+    })
+    eg.Go(func() error {
+        result.AddedServices, result.RemovedServices = c.compareServices(s1, s2)
+        return nil
+    })
+    
+    eg.Wait()
+    
+    // 计算摘要
+    result.Summary = c.calculateSummary(result)
+    
+    return result, nil
+}
+
+func (c *SessionComparator) compareProcesses(s1, s2 *Session) (added, removed []ProcessDTO) {
+    map1 := make(map[string]*ProcessDTO)
+    map2 := make(map[string]*ProcessDTO)
+    
+    for i := range s1.Processes {
+        map1[s1.Processes[i].getKey()] = &s1.Processes[i]
+    }
+    for i := range s2.Processes {
+        map2[s2.Processes[i].getKey()] = &s2.Processes[i]
+    }
+    
+    // 找出新增和移除
+    for key, proc := range map2 {
+        if _, ok := map1[key]; !ok {
+            added = append(added, *proc)
+        }
+    }
+    for key, proc := range map1 {
+        if _, ok := map2[key]; !ok {
+            removed = append(removed, *proc)
+        }
+    }
+    
+    return
+}
+```
+
+---
+
+## 前端组件设计
+
+### 组件目录结构
+
+```
+app/src/components/
+├── common/                    # 公共组件
+│   ├── DataTable/           # 通用数据表格
+│   │   ├── DataTable.vue
+│   │   ├── types.ts
+│   │   └── useDataTable.ts
+│   ├── ProgressBar/         # 进度条
+│   │   └── ProgressBar.vue
+│   ├── RiskTag/             # 风险标签
+│   │   └── RiskTag.vue
+│   ├── SearchBar/            # 搜索栏
+│   │   └── SearchBar.vue
+│   └── Timeline/             # 时间线
+│       └── Timeline.vue
+├── module/                   # 模块通用组件
+│   ├── ModuleHeader.vue      # 模块头部
+│   ├── ModuleToolbar.vue      # 模块工具栏
+│   └── ModuleDetail.vue      # 模块详情
+└── layout/                   # 布局组件
+    ├── Sidebar.vue
+    └── Header.vue
+```
+
+### 通用数据表格组件
+
+```typescript
+// components/common/DataTable/types.ts
+export interface Column {
+  key: string
+  title: string
+  width?: number
+  sortable?: boolean
+  filterable?: boolean
+  type?: 'text' | 'number' | 'date' | 'ip' | 'risk' | 'actions'
+  align?: 'left' | 'center' | 'right'
+}
+
+export interface TableProps {
+  columns: Column[]
+  data: Record<string, any>[]
+  loading?: boolean
+  pagination?: {
+    page: number
+    pageSize: number
+    total: number
+  }
+  virtualScroll?: boolean
+  rowKey?: string
+}
+```
+
+```vue
+<!-- components/common/DataTable/DataTable.vue -->
+<template>
+  <el-table
+    :data="displayData"
+    :height="height"
+    v-loading="loading"
+    @sort-change="handleSort"
+  >
+    <el-table-column
+      v-for="col in columns"
+      :key="col.key"
+      :prop="col.key"
+      :label="col.title"
+      :width="col.width"
+      :sortable="col.sortable ? 'custom' : false"
+      :align="col.align || 'left'"
+    >
+      <template #default="{ row }">
+        <RiskTag v-if="col.type === 'risk'" :level="row[col.key]" />
+        <span v-else>{{ row[col.key] }}</span>
+      </template>
+    </el-table-column>
+  </el-table>
+  
+  <el-pagination
+    v-if="pagination"
+    v-model:current-page="pagination.page"
+    v-model:page-size="pagination.pageSize"
+    :total="pagination.total"
+    @current-change="handlePageChange"
+  />
+</template>
+
+<script setup lang="ts">
+interface Props {
+  columns: Column[]
+  data: Record<string, any>[]
+  loading?: boolean
+  pagination?: { page: number; pageSize: number; total: number }
+}
+
+const props = defineProps<Props>()
+const emit = defineEmits<{
+  (e: 'sort', key: string, order: string): void
+  (e: 'page', page: number): void
+}>()
+
+const displayData = computed(() => {
+  if (props.pagination) {
+    const { page, pageSize } = props.pagination
+    return props.data.slice((page - 1) * pageSize, page * pageSize)
+  }
+  return props.data
+})
+</script>
+```
+
+### 模块视图模板
+
+```vue
+<!-- views/module/ProcessView.vue -->
+<template>
+  <div class="module-view">
+    <ModuleHeader
+      :module-id="2"
+      title="进程管理"
+      description="查看和管理系统进程"
+    />
+    
+    <ModuleToolbar
+      :actions="toolbarActions"
+      @refresh="handleRefresh"
+      @search="handleSearch"
+      @export="handleExport"
+    />
+    
+    <DataTable
+      :columns="columns"
+      :data="processes"
+      :loading="loading"
+      :pagination="pagination"
+      :virtual-scroll="true"
+      row-key="pid"
+      @sort="handleSort"
+      @page="handlePage"
+    />
+    
+    <ProcessDetailDialog
+      v-model="detailVisible"
+      :process="selectedProcess"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, onMounted } from 'vue'
+import { Go } from '@wailsjs/go/main/App'
+
+const loading = ref(false)
+const detailVisible = ref(false)
+const selectedProcess = ref<ProcessDTO>()
+
+const processes = ref<ProcessDTO[]>([])
+const pagination = reactive({
+  page: 1,
+  pageSize: 50,
+  total: 0
+})
+
+const columns = [
+  { key: 'pid', title: 'PID', width: 80, sortable: true },
+  { key: 'name', title: '名称', width: 200, sortable: true },
+  { key: 'user', title: '用户', width: 120 },
+  { key: 'cpu', title: 'CPU', width: 80, type: 'number' },
+  { key: 'memory', title: '内存', width: 100 },
+  { key: 'path', title: '路径' },
+  { key: 'riskLevel', title: '风险', width: 80, type: 'risk' },
+  { key: 'actions', title: '操作', width: 120, type: 'actions' }
+]
+
+const toolbarActions = [
+  { key: 'refresh', label: '刷新', icon: 'Refresh' },
+  { key: 'kill', label: '查杀', icon: 'Delete', disabled: true },
+  { key: 'dump', label: 'Dump', icon: 'Download' },
+  { key: 'export', label: '导出', icon: 'Export' }
+]
+
+async function handleRefresh() {
+  loading.value = true
+  try {
+    await Go.CollectModule(2)
+    const data = await Go.GetModuleData(2, '')
+    processes.value = data as ProcessDTO[]
+    pagination.total = processes.value.length
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  handleRefresh()
+})
+</script>
+```
+
+### Pinia Store 设计
+
+```typescript
+// stores/system.ts
+import { defineStore } from 'pinia'
+import { Go } from '@wailsjs/go/main/App'
+
+export const useSystemStore = defineStore('system', () => {
+  const info = ref<SystemInfo | null>(null)
+  const loading = ref(false)
+  
+  async function fetchSystemInfo() {
+    loading.value = true
+    try {
+      info.value = await Go.GetSystemInfo()
+    } finally {
+      loading.value = false
+    }
+  }
+  
+  return { info, loading, fetchSystemInfo }
+})
+
+// stores/progress.ts
+export const useProgressStore = defineStore('progress', () => {
+  const progressMap = reactive<Map<number, Progress>>(new Map())
+  
+  function update(moduleId: number, data: Partial<Progress>) {
+    const current = progressMap.get(moduleId) || { moduleId, current: 0, total: 0 }
+    Object.assign(current, data)
+    progressMap.set(moduleId, current)
+  }
+  
+  window.runtime.EventsOn('ert:progress', (data: any) => {
+    update(data.module_id, data)
+  })
+  
+  return { progressMap, update }
+})
+
+// stores/config.ts
+export const useConfigStore = defineStore('config', () => {
+  const config = ref<Config | null>(null)
+  
+  async function fetchConfig() {
+    config.value = await Go.GetConfig()
+  }
+  
+  async function updateConfig(newConfig: Config) {
+    await Go.UpdateConfig(newConfig)
+    config.value = newConfig
+  }
+  
+  return { config, fetchConfig, updateConfig }
+})
+```
+
+### 路由配置
+
+```typescript
+// router/index.ts
+import { createRouter, createWebHashHistory } from 'vue-router'
+
+const routes = [
+  { path: '/', redirect: '/m1' },
+  { path: '/m1', component: () => import('@/views/module/SystemView.vue'), meta: { title: '系统概览' } },
+  { path: '/m2', component: () => import('@/views/module/ProcessView.vue'), meta: { title: '进程管理' } },
+  { path: '/m3', component: () => import('@/views/module/NetworkView.vue'), meta: { title: '网络分析' } },
+  { path: '/m4', component: () => import('@/views/module/RegistryView.vue'), meta: { title: '注册表分析' } },
+  { path: '/m5', component: () => import('@/views/module/ServiceView.vue'), meta: { title: '服务管理' } },
+  { path: '/m6', component: () => import('@/views/module/ScheduleView.vue'), meta: { title: '计划任务' } },
+  { path: '/m7', component: () => import('@/views/module/MonitorView.vue'), meta: { title: '系统监控' } },
+  { path: '/m8', component: () => import('@/views/module/PatchView.vue'), meta: { title: '系统补丁' } },
+  { path: '/m9', component: () => import('@/views/module/SoftwareView.vue'), meta: { title: '软件列表' } },
+  { path: '/m10', component: () => import('@/views/module/KernelView.vue'), meta: { title: '内核分析' } },
+  { path: '/m11', component: () => import('@/views/module/FilesystemView.vue'), meta: { title: '文件系统' } },
+  { path: '/m12', component: () => import('@/views/module/ActivityView.vue'), meta: { title: '活动痕迹' } },
+  { path: '/m13', component: () => import('@/views/module/LoggingView.vue'), meta: { title: '日志分析' } },
+  { path: '/m14', component: () => import('@/views/module/AccountView.vue'), meta: { title: '账户分析' } },
+  { path: '/m15', component: () => import('@/views/module/MemoryView.vue'), meta: { title: '内存取证' } },
+  { path: '/m16', component: () => import('@/views/module/ThreatView.vue'), meta: { title: '威胁检测' } },
+  { path: '/m17', component: () => import('@/views/module/ResponseView.vue'), meta: { title: '应急处置' } },
+  { path: '/m18', component: () => import('@/views/module/AutostartView.vue'), meta: { title: '自启动项目' } },
+  { path: '/m19', component: () => import('@/views/module/DomainView.vue'), meta: { title: '域控检测' } },
+  { path: '/m20', component: () => import('@/views/module/DomainHackView.vue'), meta: { title: '域内渗透' } },
+  { path: '/m21', component: () => import('@/views/module/WMICView.vue'), meta: { title: 'WMIC 检测' } },
+  { path: '/m22', component: () => import('@/views/module/ReportView.vue'), meta: { title: '报告导出' } },
+  { path: '/m23', component: () => import('@/views/module/BaselineView.vue'), meta: { title: '安全基线' } },
+  { path: '/m24', component: () => import('@/views/module/IISView.vue'), meta: { title: 'IIS 日志' } },
+  { path: '/m25', component: () => import('@/views/module/CodecView.vue'), meta: { title: '编解码工具' } },
+]
+
+export const router = createRouter({
+  history: createWebHashHistory(),
+  routes
+})
+```
+
+---
+
+## 快捷键设计
+
+### 全局快捷键
+
+| 快捷键 | 功能 | 模块 | 说明 |
+|--------|------|------|------|
+| `Ctrl+Shift+T` | 一键 Triage | 全局 | 快速采集关键指标 |
+| `Ctrl+E` | 全局搜索 | 全局 | 搜索日志/进程/网络等 |
+| `Ctrl+S` | 数据导出 | 全局 | 导出当前模块数据 |
+| `Ctrl+R` | 刷新 | 全局 | 刷新当前模块数据 |
+| `Ctrl+F` | 页面内搜索 | 全局 | 在当前表格/日志中搜索 |
+| `F5` | 刷新 | 全局 | 同 Ctrl+R |
+| `F11` | 全屏 | 全局 | 切换全屏模式 |
+| `Esc` | 取消/关闭 | 全局 | 取消当前操作或关闭弹窗 |
+| `Ctrl+H` | 查看历史 | 全局 | 查看操作历史 |
+| `Ctrl+D` | 编解码工具 | 全局 | 快速打开编解码工具 |
+| `Ctrl+P` | 打印报告 | 全局 | 打印当前报告 |
+
+### 模块切换快捷键
+
+| 快捷键 | 功能 | 模块 ID |
+|--------|------|---------|
+| `Ctrl+1` | 系统概览 | M1 |
+| `Ctrl+2` | 进程管理 | M2 |
+| `Ctrl+3` | 网络分析 | M3 |
+| `Ctrl+4` | 注册表分析 | M4 |
+| `Ctrl+5` | 服务管理 | M5 |
+| `Ctrl+6` | 计划任务 | M6 |
+| `Ctrl+7` | 系统监控 | M7 |
+| `Ctrl+8` | 系统补丁 | M8 |
+| `Ctrl+9` | 软件列表 | M9 |
+
+### 快捷键实现
+
+```typescript
+// shortcuts/useShortcuts.ts
+import { onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+
+export function useShortcuts() {
+  const router = useRouter()
+  const shortcuts = new Map<string, () => void>()
+  
+  // 全局快捷键
+  shortcuts.set('ctrl+shift+t', () => {
+    // 触发 Triage 采集
+    window.runtime.EventsEmit('ert:triage')
+  })
+  
+  shortcuts.set('ctrl+e', () => {
+    // 打开全局搜索
+    window.runtime.EventsEmit('ert:global-search')
+  })
+  
+  shortcuts.set('ctrl+d', () => {
+    // 打开编解码工具
+    router.push('/m25')
+  })
+  
+  // 模块切换
+  for (let i = 1; i <= 9; i++) {
+    const moduleId = i
+    shortcuts.set(`ctrl+${i}`, () => {
+      router.push(`/m${moduleId}`)
+    })
+  }
+  
+  function handleKeyDown(e: KeyboardEvent) {
+    const key = [
+      e.ctrlKey ? 'ctrl' : '',
+      e.shiftKey ? 'shift' : '',
+      e.key.toLowerCase()
+    ].filter(Boolean).join('+')
+    
+    const handler = shortcuts.get(key)
+    if (handler) {
+      e.preventDefault()
+      handler()
+    }
+  }
+  
+  onMounted(() => {
+    window.addEventListener('keydown', handleKeyDown)
+  })
+  
+  onUnmounted(() => {
+    window.removeEventListener('keydown', handleKeyDown)
+  })
+}
+```
+
+---
+
+## 加密导出设计
+
+### 加密方案
+
+```go
+type EncryptionManager struct {
+    algorithm  string  // AES-256-GCM
+    keySize    int     // 256 bit
+    nonceSize  int     // 96 bit (12 bytes)
+}
+
+func NewEncryptionManager() *EncryptionManager {
+    return &EncryptionManager{
+        algorithm: "AES-256-GCM",
+        keySize:   32,
+        nonceSize: 12,
+    }
+}
+
+// PBKDF2 密钥派生
+func (e *EncryptionManager) deriveKey(password string, salt []byte) ([]byte, error) {
+    return pbkdf2.Key(
+        []byte(password),
+        salt,
+        100000,  // 迭代次数
+        e.keySize,
+        sha256.New,
+    ), nil
+}
+
+// 加密导出
+func (e *EncryptionManager) Encrypt(data []byte, password string) ([]byte, error) {
+    // 生成随机盐和 nonce
+    salt := make([]byte, 32)
+    nonce := make([]byte, e.nonceSize)
+    if _, err := rand.Read(salt); err != nil {
+        return nil, err
+    }
+    if _, err := rand.Read(nonce); err != nil {
+        return nil, err
+    }
+    
+    // 派生密钥
+    key, err := e.deriveKey(password, salt)
+    if err != nil {
+        return nil, err
+    }
+    
+    // AES-256-GCM 加密
+    block, err := aes.NewCipher(key)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    ciphertext := gcm.Seal(nil, nonce, data, nil)
+    
+    // 组装输出格式: salt || nonce || ciphertext
+    result := make([]byte, 0, len(salt)+len(nonce)+len(ciphertext))
+    result = append(result, salt...)
+    result = append(result, nonce...)
+    result = append(result, ciphertext...)
+    
+    return result, nil
+}
+
+// 解密导入
+func (e *EncryptionManager) Decrypt(data []byte, password string) ([]byte, error) {
+    if len(data) < 32+e.nonceSize {
+        return nil, errors.New("invalid encrypted data")
+    }
+    
+    // 解析 salt, nonce, ciphertext
+    salt := data[:32]
+    nonce := data[32:32+e.nonceSize]
+    ciphertext := data[32+e.nonceSize:]
+    
+    // 派生密钥
+    key, err := e.deriveKey(password, salt)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 解密
+    block, err := aes.NewCipher(key)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    return gcm.Open(nil, nonce, ciphertext, nil)
+}
+```
+
+### 导出包格式
+
+```
+导出包 (.ert)
+├── manifest.json          # 包清单
+├── session.json          # 会话信息
+├── data/
+│   ├── processes.json    # 进程数据
+│   ├── network.json     # 网络数据
+│   ├── registry.json    # 注册表数据
+│   └── ...
+├── logs/
+│   └── audit.log        # 审计日志
+└── signature.json        # 包签名 (可选)
+```
+
+---
+
+## 部署与运维
+
+### 目录结构
+
+```
+ERT/
+├── ert.exe                    # 主程序
+├── config/
+│   └── config.yaml            # 配置文件
+├── data/                      # 数据目录
+│   ├── ipdb/                  # IP 库
+│   ├── baseline/              # 基线模板
+│   ├── memory/                # 内存 dump
+│   └── reports/               # 报告
+├── logs/                      # 日志目录
+├── lang/                      # 语言包
+└── upgrade/                   # 升级包目录
+```
+
+### 安装流程
+
+1. **首次安装**
+   ```powershell
+   # 解压到指定目录
+   Expand-Archive -Path ERT.zip -DestinationPath C:\ERT
+   
+   # 创建数据目录
+   New-Item -ItemType Directory -Path C:\ERT\data
+   New-Item -ItemType Directory -Path C:\ERT\logs
+   
+   # 初始化配置 (可选)
+   .\ert.exe --init
+   ```
+
+2. **启动检测**
+   - 检测 WebView2 运行时
+   - 检测配置文件权限
+   - 检测管理员权限
+   - 初始化 SQLite 数据库
+
+### 升级流程
+
+```go
+type UpgradeManager struct {
+    currentVersion string
+    upgradePath    string
+}
+
+func (u *UpgradeManager) CheckUpgrade() (bool, error) {
+    // 检查远程版本
+    resp, err := http.Get("https://api.ert.io/version")
+    if err != nil {
+        return false, err
+    }
+    
+    latest := parseVersion(resp)
+    return latest.GT(u.currentVersion), nil
+}
+
+func (u *UpgradeManager) Upgrade() error {
+    // 1. 备份当前版本
+    if err := u.backup(); err != nil {
+        return err
+    }
+    
+    // 2. 下载新版本
+    if err := u.download(); err != nil {
+        return err
+    }
+    
+    // 3. 替换程序文件
+    if err := u.replace(); err != nil {
+        return err
+    }
+    
+    // 4. 迁移配置 (如需要)
+    if err := u.migrateConfig(); err != nil {
+        return err
+    }
+    
+    return nil
+}
+```
+
+### 数据迁移
+
+```go
+type MigrationManager struct {
+    oldDB *sql.DB
+    newDB *sql.DB
+}
+
+func (m *MigrationManager) Migrate() error {
+    // 1. 导出旧数据
+    sessions, err := m.oldDB.GetAllSessions()
+    if err != nil {
+        return err
+    }
+    
+    // 2. 转换格式并导入新库
+    for _, session := range sessions {
+        newSession := convertSession(session)
+        if err := m.newDB.SaveSession(newSession); err != nil {
+            return err
+        }
+    }
+    
+    // 3. 迁移配置文件
+    if err := m.migrateConfig(); err != nil {
+        return err
+    }
+    
+    return nil
+}
+```
+
+### 监控与日志
+
+```yaml
+# prometheus_metrics (可选)
+# /metrics 端点暴露以下指标
+erts_module_collection_duration_seconds{method="process"}
+erts_module_collection_total{method="process"}
+erts_active_sessions
+erts_memory_usage_bytes
+erts_sqlite_query_duration_seconds
+erts_goroutine_count
+```
+
+### 常见问题处理
+
+| 问题 | 解决方案 |
+|------|----------|
+| WebView2 未安装 | 下载安装 WebView2 运行时 |
+| 配置文件权限不足 | 以管理员身份运行 |
+| SQLite 数据库损坏 | 运行 `ert.exe --repair` 修复 |
+| 内存占用过高 | 调整 `database.cache.max_cost` 配置 |
+| 采集卡死 | 检查 `timeout` 配置，使用 Triage 模式 |
 
 ### 存储接口
 
