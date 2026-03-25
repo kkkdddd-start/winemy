@@ -6,9 +6,16 @@
         <p class="description">M23 - 密码/账户/审核/网络安全</p>
       </div>
       <div class="header-actions">
+        <el-input v-model="searchKeyword" placeholder="搜索检查项" style="width: 200px" clearable @keyup.enter="handleSearch">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
         <el-button type="primary" @click="handleRefresh" :loading="loading">
           <el-icon><Refresh /></el-icon>
           刷新
+        </el-button>
+        <el-button type="success" @click="handleExport">
+          <el-icon><Download /></el-icon>
+          导出
         </el-button>
       </div>
     </div>
@@ -116,40 +123,75 @@
         <template #header>
           <div class="card-header">
             <span>基线检查结果</span>
-            <el-select v-model="filterStatus" placeholder="筛选状态" style="width: 150px" clearable>
-              <el-option label="全部" value="" />
-              <el-option label="不合规" value="failed" />
-              <el-option label="合规" value="passed" />
-              <el-option label="警告" value="warning" />
-            </el-select>
+            <div class="header-operations">
+              <el-select v-model="filterStatus" placeholder="筛选状态" style="width: 150px" clearable>
+                <el-option label="全部" value="" />
+                <el-option label="不合规" value="failed" />
+                <el-option label="合规" value="passed" />
+                <el-option label="警告" value="warning" />
+              </el-select>
+            </div>
           </div>
         </template>
-        <el-table :data="filteredBaselineList" v-loading="loading" stripe>
-          <el-table-column prop="category" label="类别" width="120" />
-          <el-table-column prop="item" label="检查项" min-width="200" />
-          <el-table-column prop="status" label="状态" width="100">
+        <el-table :data="paginatedData" v-loading="loading" stripe @selection-change="handleSelectionChange">
+          <el-table-column type="selection" width="40" />
+          <el-table-column prop="category" label="类别" width="120" sortable show-overflow-tooltip />
+          <el-table-column prop="item" label="检查项" min-width="200" show-overflow-tooltip sortable />
+          <el-table-column prop="status" label="状态" width="100" sortable>
             <template #default="{ row }">
-              <el-tag :type="getStatusType(row.status)">{{ row.status }}</el-tag>
+              <RiskTag :risk-level="getRiskLevel(row.status)" />
             </template>
           </el-table-column>
-          <el-table-column prop="current" label="当前值" width="150" />
-          <el-table-column prop="expected" label="期望值" width="150" />
+          <el-table-column prop="current" label="当前值" width="150" sortable show-overflow-tooltip />
+          <el-table-column prop="expected" label="期望值" width="150" sortable show-overflow-tooltip />
           <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
           <el-table-column label="操作" width="120" fixed="right">
             <template #default="{ row }">
-              <el-button type="primary" size="small" @click="handleFix(row)">修复</el-button>
+              <el-button type="primary" size="small" @click="handleView(row)">详情</el-button>
             </template>
           </el-table-column>
         </el-table>
+
+        <div class="pagination-area">
+          <el-pagination
+            v-model:current-page="currentPage"
+            v-model:page-size="pageSize"
+            :total="filteredBaselineList.length"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="handlePageSizeChange"
+            @current-change="handlePageChange"
+          />
+        </div>
       </el-card>
     </div>
+
+    <el-dialog v-model="detailDialogVisible" title="基线检查详情" width="650px">
+      <el-descriptions :column="2" border v-if="selectedItem">
+        <el-descriptions-item label="检查项">{{ selectedItem.item }}</el-descriptions-item>
+        <el-descriptions-item label="类别">{{ selectedItem.category }}</el-descriptions-item>
+        <el-descriptions-item label="状态">
+          <RiskTag :risk-level="getRiskLevel(selectedItem.status)" />
+        </el-descriptions-item>
+        <el-descriptions-item label="合规标准" :span="2">{{ selectedItem.expected }}</el-descriptions-item>
+        <el-descriptions-item label="当前配置" :span="2">
+          <code class="config-code">{{ selectedItem.current }}</code>
+        </el-descriptions-item>
+        <el-descriptions-item label="详细说明" :span="2">{{ selectedItem.description || '无' }}</el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button @click="detailDialogVisible = false">关闭</el-button>
+        <el-button type="warning" @click="handleFix(selectedItem!)" :disabled="selectedItem?.status === '合规'">修复</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Refresh, Warning, SuccessFilled, WarningFilled, InfoFilled, Lock, User, Document, Connection } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Refresh, Warning, SuccessFilled, WarningFilled, InfoFilled, Lock, User, Document, Connection, Search, Download } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import RiskTag from '@/components/RiskTag/RiskTag.vue'
 import { Go } from '@wailsjs/go/main/App'
 
 interface BaselineItem {
@@ -162,8 +204,14 @@ interface BaselineItem {
 }
 
 const loading = ref(false)
+const searchKeyword = ref('')
 const filterStatus = ref('')
+const currentPage = ref(1)
+const pageSize = ref(20)
 const baselineList = ref<BaselineItem[]>([])
+const selectedItem = ref<BaselineItem | null>(null)
+const detailDialogVisible = ref(false)
+const selectedItems = ref<BaselineItem[]>([])
 const baselineStats = ref({
   failed: 0,
   passed: 0,
@@ -172,17 +220,44 @@ const baselineStats = ref({
 const baselineScore = ref(0)
 
 const filteredBaselineList = computed(() => {
-  if (!filterStatus.value) return baselineList.value
-  return baselineList.value.filter(b => b.status === filterStatus.value)
+  let result = baselineList.value
+  if (searchKeyword.value) {
+    const keyword = searchKeyword.value.toLowerCase()
+    result = result.filter(b =>
+      b.item.toLowerCase().includes(keyword) ||
+      b.category.toLowerCase().includes(keyword) ||
+      b.description.toLowerCase().includes(keyword)
+    )
+  }
+  if (filterStatus.value) {
+    result = result.filter(b => b.status === (filterStatus.value === 'passed' ? '合规' : filterStatus.value === 'failed' ? '不合规' : '警告'))
+  }
+  return result
 })
 
-function getStatusType(status: string): string {
-  const typeMap: Record<string, string> = {
-    '不合规': 'danger',
-    '合规': 'success',
-    '警告': 'warning'
+const paginatedData = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return filteredBaselineList.value.slice(start, end)
+})
+
+function getRiskLevel(status: string): number {
+  switch (status) {
+    case '不合规': return 2
+    case '警告': return 1
+    case '合规': return 0
+    default: return 0
   }
-  return typeMap[status] || 'info'
+}
+
+function updateStats() {
+  baselineStats.value = {
+    failed: baselineList.value.filter(b => b.status === '不合规').length,
+    passed: baselineList.value.filter(b => b.status === '合规').length,
+    warning: baselineList.value.filter(b => b.status === '警告').length
+  }
+  const total = baselineList.value.length
+  baselineScore.value = total > 0 ? Math.round((baselineStats.value.passed / total) * 100) : 0
 }
 
 async function loadBaselineList() {
@@ -191,13 +266,7 @@ async function loadBaselineList() {
     const data = await Go.GetBaselineList()
     if (data) {
       baselineList.value = data as BaselineItem[]
-      baselineStats.value = {
-        failed: baselineList.value.filter(b => b.status === '不合规').length,
-        passed: baselineList.value.filter(b => b.status === '合规').length,
-        warning: baselineList.value.filter(b => b.status === '警告').length
-      }
-      const total = baselineList.value.length
-      baselineScore.value = total > 0 ? Math.round((baselineStats.value.passed / total) * 100) : 0
+      updateStats()
     }
   } catch (error) {
     console.error('Failed to load baseline list:', error)
@@ -207,16 +276,53 @@ async function loadBaselineList() {
   }
 }
 
+function handleSearch() {
+  currentPage.value = 1
+}
+
 function handleRefresh() {
   loadBaselineList()
 }
 
-function handleFeature(feature: string) {
-  ElMessage.info(`功能: ${feature}`)
+function handlePageSizeChange(size: number) {
+  pageSize.value = size
+  currentPage.value = 1
 }
 
-function handleFix(row: BaselineItem) {
-  ElMessage.success(`修复检查项: ${row.item}`)
+function handlePageChange(page: number) {
+  currentPage.value = page
+}
+
+function handleSelectionChange(selection: BaselineItem[]) {
+  selectedItems.value = selection
+}
+
+function handleFeature(feature: string) {
+  filterStatus.value = ''
+}
+
+function handleView(row: BaselineItem) {
+  selectedItem.value = row
+  detailDialogVisible.value = true
+}
+
+async function handleFix(row: BaselineItem) {
+  if (!row) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要自动修复 "${row.item}" 吗？`,
+      '修复确认',
+      { confirmButtonText: '确认修复', cancelButtonText: '取消', type: 'warning' }
+    )
+    ElMessage.success('正在修复...')
+    detailDialogVisible.value = false
+  } catch {
+    ElMessage.info('已取消操作')
+  }
+}
+
+function handleExport() {
+  ElMessage.info('正在导出基线检查报告...')
 }
 
 onMounted(() => {
@@ -225,9 +331,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.module-view {
-  height: 100%;
-}
+.module-view { height: 100%; }
 
 .module-header {
   display: flex;
@@ -236,20 +340,12 @@ onMounted(() => {
   margin-bottom: 20px;
 }
 
-.header-info h2 {
-  margin: 0 0 5px 0;
-  font-size: 20px;
-}
+.header-info h2 { margin: 0 0 5px 0; font-size: 20px; }
+.description { margin: 0; color: #909399; font-size: 14px; }
 
-.description {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
+.header-actions { display: flex; gap: 10px; align-items: center; }
 
-.info-cards {
-  margin-bottom: 20px;
-}
+.info-cards, .feature-cards { margin-bottom: 20px; }
 
 .info-card {
   background: #16213e;
@@ -258,51 +354,6 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 15px;
-}
-
-.card-icon {
-  width: 50px;
-  height: 50px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-}
-
-.card-icon.danger {
-  background: rgba(245, 108, 108, 0.2);
-  color: #f56c6c;
-}
-
-.card-icon.success {
-  background: rgba(103, 194, 58, 0.2);
-  color: #67c23a;
-}
-
-.card-icon.warning {
-  background: rgba(230, 162, 60, 0.2);
-  color: #e6a23c;
-}
-
-.card-icon.info {
-  background: rgba(64, 158, 255, 0.2);
-  color: #409eff;
-}
-
-.card-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.card-label {
-  font-size: 12px;
-  color: #909399;
-}
-
-.feature-cards {
-  margin-bottom: 20px;
 }
 
 .feature-card {
@@ -316,42 +367,44 @@ onMounted(() => {
   gap: 15px;
 }
 
-.feature-card:hover {
-  background: #1a2a4a;
-  transform: translateY(-2px);
-}
+.feature-card:hover { background: #1a2a4a; transform: translateY(-2px); }
 
 .card-icon {
-  width: 50px;
-  height: 50px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 50px; height: 50px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
   font-size: 24px;
-  background: rgba(64, 158, 255, 0.2);
-  color: #409eff;
 }
+.card-icon.danger { background: rgba(245, 108, 108, 0.2); color: #f56c6c; }
+.card-icon.success { background: rgba(103, 194, 58, 0.2); color: #67c23a; }
+.card-icon.warning { background: rgba(230, 162, 60, 0.2); color: #e6a23c; }
+.card-icon.info { background: rgba(64, 158, 255, 0.2); color: #409eff; }
 
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 5px;
-}
+.card-value { font-size: 24px; font-weight: 600; color: #fff; }
+.card-label { font-size: 12px; color: #909399; }
 
-.card-desc {
-  font-size: 12px;
-  color: #909399;
-}
+.card-title { font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 5px; }
+.card-desc { font-size: 12px; color: #909399; }
 
-.content-area {
-  margin-top: 20px;
-}
+.content-area { margin-top: 20px; }
 
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.header-operations { display: flex; gap: 10px; }
+
+.pagination-area { margin-top: 16px; display: flex; justify-content: flex-end; }
+
+.config-code {
+  display: block;
+  padding: 8px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  color: #e6a23c;
+  word-break: break-all;
 }
 </style>

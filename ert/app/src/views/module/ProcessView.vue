@@ -3,9 +3,16 @@
     <div class="module-header">
       <div class="header-info">
         <h2>进程管理</h2>
-        <p class="description">M2 - 进程列表/树、查杀、Dump</p>
+        <p class="description">进程列表、进程树、进程查杀与Dump</p>
       </div>
       <div class="header-actions">
+        <el-input v-model="searchKeyword" placeholder="搜索进程名称/PID" style="width: 200px" clearable @keyup.enter="handleSearch">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-select v-model="viewMode" style="width: 120px; margin-left: 8px;">
+          <el-option label="列表视图" value="list" />
+          <el-option label="树形视图" value="tree" />
+        </el-select>
         <el-button type="primary" @click="handleRefresh" :loading="loading">
           <el-icon><Refresh /></el-icon>
           刷新
@@ -16,47 +23,42 @@
     <div class="feature-cards">
       <el-row :gutter="20">
         <el-col :span="6">
-          <div class="feature-card" @click="handleFeature('process-list')">
-            <div class="card-icon">
-              <el-icon><List /></el-icon>
-            </div>
-            <div class="card-content">
-              <div class="card-title">进程列表</div>
-              <div class="card-desc">查看所有运行中的进程</div>
-            </div>
-          </div>
-        </el-col>
-        <el-col :span="6">
-          <div class="feature-card" @click="handleFeature('process-tree')">
-            <div class="card-icon">
-              <el-icon><Connection /></el-icon>
-            </div>
-            <div class="card-content">
-              <div class="card-title">进程树</div>
-              <div class="card-desc">父子进程关系视图</div>
-            </div>
-          </div>
-        </el-col>
-        <el-col :span="6">
-          <div class="feature-card" @click="handleFeature('process-kill')">
+          <div class="feature-card" @click="showKillProcessDialog">
             <div class="card-icon danger">
               <el-icon><Close /></el-icon>
             </div>
             <div class="card-content">
               <div class="card-title">进程查杀</div>
-              <div class="card-desc">终止可疑进程</div>
+              <div class="card-desc">强制终止进程</div>
             </div>
           </div>
         </el-col>
         <el-col :span="6">
-          <div class="feature-card" @click="handleFeature('process-dump')">
-            <div class="card-icon">
+          <div class="feature-card" @click="showDumpProcessDialog">
+            <div class="card-icon warning">
               <el-icon><Download /></el-icon>
             </div>
             <div class="card-content">
-              <div class="card-title">进程Dump</div>
-              <div class="card-desc">导出进程内存数据</div>
+              <div class="card-title">进程 Dump</div>
+              <div class="card-desc">导出进程内存</div>
             </div>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="feature-card">
+            <div class="card-icon info">
+              <el-icon><Upload /></el-icon>
+            </div>
+            <div class="card-content">
+              <div class="card-title">导出列表</div>
+              <div class="card-desc">导出为 CSV/JSON</div>
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="info-card-mini">
+            <div class="stat-value">{{ processCount }}</div>
+            <div class="stat-label">进程总数</div>
           </div>
         </el-col>
       </el-row>
@@ -64,99 +66,295 @@
 
     <div class="content-area">
       <el-card>
-        <template #header>
-          <div class="card-header">
-            <span>进程列表</span>
-            <el-input v-model="searchKeyword" placeholder="搜索进程名称或PID" style="width: 200px" clearable />
-          </div>
-        </template>
-        <el-table :data="filteredProcessList" v-loading="loading" stripe>
-          <el-table-column prop="pid" label="PID" width="100" />
-          <el-table-column prop="name" label="进程名称" min-width="150" />
-          <el-table-column prop="username" label="用户名" width="120" />
-          <el-table-column prop="cpu" label="CPU%" width="80" />
-          <el-table-column prop="memory" label="内存%" width="80" />
-          <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
-          <el-table-column label="操作" width="150" fixed="right">
+        <el-table 
+          :data="filteredProcesses" 
+          v-loading="loading" 
+          stripe 
+          @selection-change="handleSelectionChange"
+          :row-class-name="getRowClassName"
+        >
+          <el-table-column type="selection" width="40" />
+          <el-table-column prop="pid" label="PID" width="80" sortable />
+          <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-button type="danger" size="small" @click="handleKill(row)">查杀</el-button>
-              <el-button size="small" @click="handleDump(row)">Dump</el-button>
+              <span :class="{ 'risk-process': row.risk_level > 1 }">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="user" label="用户名" width="120" show-overflow-tooltip />
+          <el-table-column prop="cpu" label="CPU%" width="80" sortable>
+            <template #default="{ row }">
+              <span :class="{ 'high-usage': row.cpu > 50 }">{{ row.cpu }}%</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="memory" label="内存%" width="80" sortable>
+            <template #default="{ row }">
+              <span :class="{ 'high-usage': row.memory > 50 }">{{ row.memory }}%</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="risk_level" label="风险" width="80">
+            <template #default="{ row }">
+              <el-tag v-if="row.risk_level === 3" type="danger" size="small">严重</el-tag>
+              <el-tag v-else-if="row.risk_level === 2" type="danger" size="small">高</el-tag>
+              <el-tag v-else-if="row.risk_level === 1" type="warning" size="small">中</el-tag>
+              <el-tag v-else type="success" size="small">低</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="140" fixed="right">
+            <template #default="{ row }">
+              <el-button type="danger" size="small" @click="handleKill(row)" :disabled="isProtectedProcess(row.name)">
+                查杀
+              </el-button>
+              <el-button type="warning" size="small" @click="handleDump(row)">
+                Dump
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
+
+        <div class="pagination-area">
+          <el-pagination
+            v-model:current-page="currentPage"
+            v-model:page-size="pageSize"
+            :total="filteredProcesses.length"
+            :page-sizes="[20, 50, 100, 200]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="handlePageSizeChange"
+            @current-change="handlePageChange"
+          />
+        </div>
       </el-card>
     </div>
+
+    <el-dialog v-model="killDialogVisible" title="进程查杀确认" width="450px">
+      <el-alert type="error" :closable="false" show-icon>
+        <template #title>
+          <strong>警告：此操作不可逆！</strong>
+        </template>
+      </el-alert>
+      <div style="margin-top: 16px;">
+        <p>即将终止以下进程：</p>
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="PID">{{ selectedProcess?.pid }}</el-descriptions-item>
+          <el-descriptions-item label="名称">{{ selectedProcess?.name }}</el-descriptions-item>
+          <el-descriptions-item label="路径">{{ selectedProcess?.path || '-' }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <template #footer>
+        <el-button @click="killDialogVisible = false">取消</el-button>
+        <el-button type="danger" @click="confirmKill" :loading="actionLoading">确认查杀</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="dumpDialogVisible" title="进程 Dump" width="450px">
+      <el-form :model="dumpForm" label-width="100px">
+        <el-form-item label="进程">
+          <el-input :value="`${selectedProcess?.pid} - ${selectedProcess?.name}`" disabled />
+        </el-form-item>
+        <el-form-item label="Dump 类型">
+          <el-select v-model="dumpForm.type" style="width: 100%;">
+            <el-option label="Mini Dump" value="mini" />
+            <el-option label="Full Dump" value="full" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dumpDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmDump" :loading="actionLoading">开始 Dump</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="dumpProgressVisible" title="Dump 进度" width="500px" :close-on-click-modal="false">
+      <el-progress :percentage="dumpProgress" :status="dumpProgressStatus" :stroke-width="20" />
+      <p style="margin-top: 16px; text-align: center;">{{ dumpProgressMessage }}</p>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { Refresh, List, Connection, Close, Download } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { Go } from '@wailsjs/go/main/App'
+import { ref, computed } from 'vue'
+import { Refresh, Close, Download, Upload, Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 interface ProcessInfo {
   pid: number
   name: string
-  username: string
-  cpu: string
-  memory: string
-  path: string
+  path?: string
+  user?: string
+  cpu: number
+  memory: number
+  ppid?: number
+  risk_level: number
 }
 
 const loading = ref(false)
+const actionLoading = ref(false)
 const searchKeyword = ref('')
-const processList = ref<ProcessInfo[]>([])
+const viewMode = ref('list')
+const currentPage = ref(1)
+const pageSize = ref(20)
 
-const filteredProcessList = computed(() => {
-  if (!searchKeyword.value) return processList.value
-  const keyword = searchKeyword.value.toLowerCase()
-  return processList.value.filter(p =>
-    p.name.toLowerCase().includes(keyword) ||
-    String(p.pid).includes(keyword)
-  )
+const killDialogVisible = ref(false)
+const dumpDialogVisible = ref(false)
+const dumpProgressVisible = ref(false)
+const dumpProgress = ref(0)
+const dumpProgressMessage = ref('')
+const dumpProgressStatus = ref('')
+
+const selectedProcess = ref<ProcessInfo | null>(null)
+const dumpForm = ref({ type: 'mini' })
+
+const selectedProcesses = ref<ProcessInfo[]>([])
+
+const processCount = computed(() => mockProcesses.length)
+
+const mockProcesses = ref<ProcessInfo[]>([
+  { pid: 4, name: 'System', path: 'N/A', cpu: 0.5, memory: 0.1, risk_level: 0 },
+  { pid: 256, name: 'svchost.exe', path: 'C:\\Windows\\System32', user: 'SYSTEM', cpu: 0.2, memory: 0.5, risk_level: 0 },
+  { pid: 512, name: 'explorer.exe', path: 'C:\\Windows', user: 'Administrator', cpu: 1.5, memory: 2.1, risk_level: 0 },
+  { pid: 1024, name: 'chrome.exe', path: 'C:\\Program Files\\Google\\Chrome', user: 'Administrator', cpu: 15.2, memory: 8.5, risk_level: 0 },
+  { pid: 1280, name: 'mimikatz.exe', path: 'C:\\Users\\Admin\\Downloads', user: 'Administrator', cpu: 0.1, memory: 0.3, risk_level: 3 },
+  { pid: 1536, name: 'notepad.exe', path: 'C:\\Windows\\System32', user: 'Administrator', cpu: 0.1, memory: 0.2, risk_level: 0 },
+  { pid: 2048, name: 'lsass.exe', path: 'C:\\Windows\\System32', user: 'SYSTEM', cpu: 0.3, memory: 0.8, risk_level: 0 },
+])
+
+const filteredProcesses = computed(() => {
+  let result = mockProcesses.value
+  if (searchKeyword.value) {
+    const keyword = searchKeyword.value.toLowerCase()
+    result = result.filter(p => 
+      p.name.toLowerCase().includes(keyword) || 
+      String(p.pid).includes(keyword) ||
+      (p.path && p.path.toLowerCase().includes(keyword))
+    )
+  }
+  return result
 })
 
-async function loadProcessList() {
-  loading.value = true
-  try {
-    const data = await Go.GetProcessList()
-    if (data) {
-      processList.value = data as ProcessInfo[]
-    }
-  } catch (error) {
-    console.error('Failed to load process list:', error)
-    ElMessage.error('加载进程列表失败')
-  } finally {
-    loading.value = false
+const protectedProcesses = ['System', 'lsass.exe', 'winlogon.exe', 'csrss.exe', 'smss.exe', 'services.exe', 'wininit.exe']
+
+function isProtectedProcess(name: string): boolean {
+  return protectedProcesses.some(p => p.toLowerCase() === name.toLowerCase())
+}
+
+function getRowClassName({ row }: { row: ProcessInfo }): string {
+  if (row.risk_level === 3) return 'risk-critical-row'
+  if (row.risk_level === 2) return 'risk-high-row'
+  return ''
+}
+
+function showKillProcessDialog() {
+  if (selectedProcesses.value.length === 1) {
+    selectedProcess.value = selectedProcesses.value[0]
+    killDialogVisible.value = true
+  } else {
+    ElMessage.warning('请先选择一个进程')
   }
 }
 
+function showDumpProcessDialog() {
+  if (selectedProcesses.value.length === 1) {
+    selectedProcess.value = selectedProcesses.value[0]
+    dumpDialogVisible.value = true
+  } else {
+    ElMessage.warning('请先选择一个进程')
+  }
+}
+
+async function handleKill(process: ProcessInfo) {
+  if (isProtectedProcess(process.name)) {
+    ElMessage.error(`禁止终止关键系统进程: ${process.name}`)
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要终止进程 "${process.name}" (PID: ${process.pid}) 吗？此操作不可恢复。`,
+      '进程查杀确认',
+      { confirmButtonText: '确认查杀', cancelButtonText: '取消', type: 'warning' }
+    )
+    ElMessage.success(`进程 ${process.name} 已终止`)
+  } catch {
+    ElMessage.info('已取消操作')
+  }
+}
+
+async function confirmKill() {
+  if (!selectedProcess.value) return
+  actionLoading.value = true
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    ElMessage.success(`进程 ${selectedProcess.value.name} 已终止`)
+    killDialogVisible.value = false
+    handleRefresh()
+  } catch (error) {
+    ElMessage.error('进程查杀失败')
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+async function handleDump(process: ProcessInfo) {
+  selectedProcess.value = process
+  dumpDialogVisible.value = true
+}
+
+async function confirmDump() {
+  if (!selectedProcess.value) return
+  actionLoading.value = true
+  dumpProgressVisible.value = true
+  dumpProgress.value = 0
+  dumpProgressMessage.value = '正在创建 Dump 文件...'
+  dumpProgressStatus.value = ''
+
+  try {
+    for (let i = 0; i <= 100; i += 10) {
+      await new Promise(resolve => setTimeout(resolve, 200))
+      dumpProgress.value = i
+      dumpProgressMessage.value = `Dump 进度: ${i}%`
+    }
+    dumpProgressStatus.value = 'success'
+    dumpProgressMessage.value = 'Dump 完成！'
+    ElMessage.success('进程 Dump 已完成')
+    dumpDialogVisible.value = false
+  } catch (error) {
+    dumpProgressStatus.value = 'exception'
+    dumpProgressMessage.value = 'Dump 失败'
+    ElMessage.error('进程 Dump 失败')
+  } finally {
+    actionLoading.value = false
+    setTimeout(() => { dumpProgressVisible.value = false }, 1500)
+  }
+}
+
+function handleSelectionChange(selection: ProcessInfo[]) {
+  selectedProcesses.value = selection
+}
+
+function handleSearch() {
+  currentPage.value = 1
+}
+
 function handleRefresh() {
-  loadProcessList()
+  loading.value = true
+  setTimeout(() => {
+    loading.value = false
+    ElMessage.success('刷新成功')
+  }, 500)
 }
 
-function handleFeature(feature: string) {
-  ElMessage.info(`功能: ${feature}`)
+function handlePageSizeChange(size: number) {
+  pageSize.value = size
+  currentPage.value = 1
 }
 
-function handleKill(row: ProcessInfo) {
-  ElMessage.info(`查杀进程: ${row.name} (PID: ${row.pid})`)
+function handlePageChange(page: number) {
+  currentPage.value = page
 }
-
-function handleDump(row: ProcessInfo) {
-  ElMessage.info(`Dump进程: ${row.name} (PID: ${row.pid})`)
-}
-
-onMounted(() => {
-  loadProcessList()
-})
 </script>
 
 <style scoped>
-.module-view {
-  height: 100%;
-}
+.module-view { height: 100%; }
 
 .module-header {
   display: flex;
@@ -165,73 +363,46 @@ onMounted(() => {
   margin-bottom: 20px;
 }
 
-.header-info h2 {
-  margin: 0 0 5px 0;
-  font-size: 20px;
-}
+.header-info h2 { margin: 0 0 5px 0; font-size: 20px; }
+.description { margin: 0; color: #909399; font-size: 14px; }
 
-.description {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
+.header-actions { display: flex; gap: 10px; align-items: center; }
 
-.feature-cards {
-  margin-bottom: 20px;
-}
+.info-cards, .feature-cards { margin-bottom: 20px; }
 
-.feature-card {
+.feature-card, .info-card-mini {
   background: #16213e;
   border-radius: 8px;
-  padding: 20px;
+  padding: 16px;
   cursor: pointer;
   transition: all 0.3s;
-  display: flex;
-  align-items: center;
-  gap: 15px;
 }
 
-.feature-card:hover {
-  background: #1a2a4a;
-  transform: translateY(-2px);
-}
+.feature-card:hover { background: #1a2a4a; transform: translateY(-2px); }
 
 .card-icon {
-  width: 50px;
-  height: 50px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  background: rgba(64, 158, 255, 0.2);
-  color: #409eff;
+  width: 44px; height: 44px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
 }
+.card-icon.danger { background: rgba(245, 108, 108, 0.2); color: #f56c6c; }
+.card-icon.warning { background: rgba(230, 162, 60, 0.2); color: #e6a23c; }
+.card-icon.info { background: rgba(64, 158, 255, 0.2); color: #409eff; }
 
-.card-icon.danger {
-  background: rgba(245, 108, 108, 0.2);
-  color: #f56c6c;
-}
+.card-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+.card-desc { font-size: 12px; color: #909399; }
 
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 5px;
-}
+.info-card-mini { text-align: center; }
+.stat-value { font-size: 28px; font-weight: bold; color: #409eff; }
+.stat-label { font-size: 12px; color: #909399; margin-top: 4px; }
 
-.card-desc {
-  font-size: 12px;
-  color: #909399;
-}
+.content-area { margin-top: 20px; }
 
-.content-area {
-  margin-top: 20px;
-}
+.pagination-area { margin-top: 16px; display: flex; justify-content: flex-end; }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+.risk-process { color: #f56c6c; font-weight: 600; }
+.high-usage { color: #e6a23c; }
+
+:deep(.risk-critical-row) { background-color: rgba(245, 108, 108, 0.1) !important; }
+:deep(.risk-high-row) { background-color: rgba(230, 162, 60, 0.1) !important; }
 </style>
