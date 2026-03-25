@@ -12,12 +12,14 @@ set OUTPUT_DIR=%PROJECT_DIR%bin
 set GUI_OUTPUT=%OUTPUT_DIR%\ert.exe
 set CLI_OUTPUT=%OUTPUT_DIR%\ert-cli.exe
 set VERSION=13.0.0
-for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set "dt=%%a"
-set BUILD_TIME=%dt:~0,4%-%dt:~4,2%-%dt:~6,2% %dt:~8,2%:%dt:~10,2%:%dt:~12,2%
 
-set LDFLAGS=-s -w -H=windowsgui -trimpath
-set LDFLAGS=%LDFLAGS% -X main.Version=%VERSION%
-set LDFLAGS=%LDFLAGS% -X main.BuildTime=%BUILD_TIME%
+REM Get build time using PowerShell (wmic is deprecated on Windows 11)
+for /f %%a in ('powershell -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'"') do set BUILD_TIME=%%a
+
+REM Set ldflags
+set LDFLAGS=-s -H=windowsgui -trimpath
+set LDFLAGS=!LDFLAGS! -X main.Version=%VERSION%
+set LDFLAGS=!LDFLAGS! -X main.BuildTime=%BUILD_TIME%
 
 REM Create output directory
 if not exist "%OUTPUT_DIR%" (
@@ -59,7 +61,10 @@ echo [INFO] Cleaning old build artifacts...
 if exist "%GUI_OUTPUT%" del /q "%GUI_OUTPUT%"
 
 echo [INFO] Compiling Go code...
-cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=""%LDFLAGS%"" -o ""%GUI_OUTPUT%"" ./cmd/gui/"
+cd /d "%PROJECT_DIR%"
+set GOOS=windows
+set GOARCH=amd64
+go build -ldflags "%LDFLAGS%" -o "%GUI_OUTPUT%" ./cmd/gui/
 
 if exist "%GUI_OUTPUT%" (
     for %%A in ("%GUI_OUTPUT%") do set FILE_SIZE=%%~zA
@@ -78,7 +83,10 @@ echo [INFO] Cleaning old build artifacts...
 if exist "%CLI_OUTPUT%" del /q "%CLI_OUTPUT%"
 
 echo [INFO] Compiling CLI code...
-cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=""%LDFLAGS%"" -o ""%CLI_OUTPUT%"" ./cmd/cli/"
+cd /d "%PROJECT_DIR%"
+set GOOS=windows
+set GOARCH=amd64
+go build -ldflags "%LDFLAGS%" -o "%CLI_OUTPUT%" ./cmd/cli/
 
 if exist "%CLI_OUTPUT%" (
     for %%A in ("%CLI_OUTPUT%") do set FILE_SIZE=%%~zA
