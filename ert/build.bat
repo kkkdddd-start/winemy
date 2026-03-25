@@ -1,26 +1,17 @@
 @echo off
 REM ERT (Windows Emergency Response Tool) Build Script
-REM Windows 一键打包脚本
 
 setlocal enabledelayedexpansion
 
-REM 颜色定义
-set RED=[91m
-set GREEN=[92m
-set YELLOW=[93m
-set BLUE=[94m
-set NC=[0m
-
-REM 项目路径
+REM Project paths
 set PROJECT_DIR=%~dp0
 cd /d "%PROJECT_DIR%"
 
-REM 构建配置
+REM Build configuration
 set OUTPUT_DIR=%PROJECT_DIR%bin
 set GUI_OUTPUT=%OUTPUT_DIR%\ert.exe
 set CLI_OUTPUT=%OUTPUT_DIR%\ert-cli.exe
 set VERSION=13.0.0
-REM 获取当前时间
 for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set "dt=%%a"
 set BUILD_TIME=%dt:~0,4%-%dt:~4,2%-%dt:~6,2% %dt:~8,2%:%dt:~10,2%:%dt:~12,2%
 
@@ -28,96 +19,92 @@ set LDFLAGS=-s -w -H=windowsgui -trimpath
 set LDFLAGS=%LDFLAGS% -X main.Version=%VERSION%
 set LDFLAGS=%LDFLAGS% -X main.BuildTime=%BUILD_TIME%
 
-REM 创建输出目录
-if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+REM Create output directory
+if not exist "%OUTPUT_DIR%" (
+    mkdir "%OUTPUT_DIR%"
+)
 
 echo.
 echo ==============================================
-echo   Windows 应急响应工具 (ERT) v%VERSION%
+echo   Windows Emergency Response Tool v%VERSION%
 echo   Build Script
 echo ==============================================
 echo.
 
 :check_env
-echo [INFO] 检查构建环境...
+echo [INFO] Checking build environment...
 
 where go >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Go 未安装，请先安装 Go 1.21+
+    echo [ERROR] Go is not installed. Please install Go 1.21+
     exit /b 1
 )
 for /f "tokens=*" %%i in ('go version') do set GO_VERSION=%%i
-echo [INFO] Go 版本: !GO_VERSION!
+echo [INFO] Go version: !GO_VERSION!
 
-REM 检查 Node.js (可选)
 where node >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    for /f "tokens=*" %%i in ('node --version') do echo [INFO] Node.js 版本: %%i
+    for /f "tokens=*" %%i in ('node --version') do echo [INFO] Node.js version: %%i
 ) else (
-    echo [WARN] Node.js 未安装，前端构建将被跳过
+    echo [WARN] Node.js is not installed, frontend build will be skipped
 )
 
-echo [SUCCESS] 环境检查完成
+echo [SUCCESS] Environment check passed
 echo.
 
 :build_gui
-echo [INFO] 开始构建 GUI 版本...
+echo [INFO] Building GUI version...
 
-echo [INFO] 清理旧构建产物...
+echo [INFO] Cleaning old build artifacts...
 if exist "%GUI_OUTPUT%" del /q "%GUI_OUTPUT%"
 
-echo [INFO] 编译 Go 代码...
-cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=\"%LDFLAGS%\" -o \"%GUI_OUTPUT%\" ./cmd/gui/"
+echo [INFO] Compiling Go code...
+cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=""%LDFLAGS%"" -o ""%GUI_OUTPUT%"" ./cmd/gui/"
 
 if exist "%GUI_OUTPUT%" (
     for %%A in ("%GUI_OUTPUT%") do set FILE_SIZE=%%~zA
     set /a FILE_SIZE_MB=%FILE_SIZE% / 1024 / 1024
-    echo [SUCCESS] GUI 版本构建成功: %GUI_OUTPUT% (!FILE_SIZE_MB! MB)
+    echo [SUCCESS] GUI build succeeded: %GUI_OUTPUT% (!FILE_SIZE_MB! MB)
 ) else (
-    echo [ERROR] GUI 版本构建失败
+    echo [ERROR] GUI build failed
     exit /b 1
 )
 echo.
 
 :build_cli
-echo [INFO] 开始构建 CLI 版本...
+echo [INFO] Building CLI version...
 
-echo [INFO] 清理旧构建产物...
+echo [INFO] Cleaning old build artifacts...
 if exist "%CLI_OUTPUT%" del /q "%CLI_OUTPUT%"
 
-echo [INFO] 编译 CLI 代码...
-cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=\"%LDFLAGS%\" -o \"%CLI_OUTPUT%\" ./cmd/cli/"
+echo [INFO] Compiling CLI code...
+cmd /c "set GOOS=windows && set GOARCH=amd64 && go build -ldflags=""%LDFLAGS%"" -o ""%CLI_OUTPUT%"" ./cmd/cli/"
 
 if exist "%CLI_OUTPUT%" (
     for %%A in ("%CLI_OUTPUT%") do set FILE_SIZE=%%~zA
     set /a FILE_SIZE_MB=%FILE_SIZE% / 1024 / 1024
-    echo [SUCCESS] CLI 版本构建成功: %CLI_OUTPUT% (!FILE_SIZE_MB! MB)
+    echo [SUCCESS] CLI build succeeded: %CLI_OUTPUT% (!FILE_SIZE_MB! MB)
 ) else (
-    echo [ERROR] CLI 版本构建失败
+    echo [ERROR] CLI build failed
     exit /b 1
 )
 echo.
 
 :build_frontend
-echo [INFO] 检查前端构建...
+echo [INFO] Checking frontend build...
 
 if exist "%PROJECT_DIR%app\package.json" (
-    echo [INFO] 前端目录存在，跳过 npm 安装
-    REM 如果需要构建前端，取消下面的注释
-    REM cd /d "%PROJECT_DIR%app"
-    REM call npm install
-    REM call npm run build
-    REM cd /d "%PROJECT_DIR%"
+    echo [INFO] Frontend directory exists, skipping npm install
 ) else (
-    echo [WARN] 前端目录不存在，跳过前端构建
+    echo [WARN] Frontend directory not found, skipping frontend build
 )
 
 echo.
 echo ==============================================
-echo   构建完成!
+echo   Build Complete!
 echo ==============================================
 echo.
-echo 构建产物:
+echo Build outputs:
 echo   GUI: %GUI_OUTPUT%
 echo   CLI: %CLI_OUTPUT%
 echo.
@@ -125,17 +112,17 @@ echo.
 goto :eof
 
 :clean
-echo [INFO] 清理构建产物...
+echo [INFO] Cleaning build artifacts...
 if exist "%OUTPUT_DIR%" rmdir /s /q "%OUTPUT_DIR%"
 del /q "%PROJECT_DIR%ert.exe" 2>nul
 del /q "%PROJECT_DIR%ert-cli.exe" 2>nul
-echo [SUCCESS] 清理完成
+echo [SUCCESS] Cleanup complete
 goto :eof
 
 :check
-echo [INFO] 运行代码检查...
+echo [INFO] Running code checks...
 go vet ./...
-echo [SUCCESS] 代码检查完成
+echo [SUCCESS] Code check complete
 goto :eof
 
 :main
@@ -149,21 +136,21 @@ if /i "%~1"=="help" goto :show_help
 
 :show_help
 echo.
-echo 用法: build.bat [命令]
+echo Usage: build.bat [command]
 echo.
-echo 命令:
-echo   gui     构建 GUI 版本
-echo   cli     构建 CLI 版本
-echo   all     构建所有版本 ^(默认^)
-echo   clean   清理构建产物
-echo   check   运行代码检查
-echo   help    显示此帮助信息
+echo Commands:
+echo   gui     Build GUI version
+echo   cli     Build CLI version
+echo   all     Build all versions ^(default^)
+echo   clean   Clean build artifacts
+echo   check   Run code checks
+echo   help    Show this help message
 echo.
-echo 示例:
-echo   build.bat          构建所有版本
-echo   build.bat gui     仅构建 GUI 版本
-echo   build.bat cli     仅构建 CLI 版本
-echo   build.bat clean   清理
+echo Examples:
+echo   build.bat          Build all versions
+echo   build.bat gui      Build GUI version only
+echo   build.bat cli      Build CLI version only
+echo   build.bat clean    Clean artifacts
 echo.
 goto :eof
 
