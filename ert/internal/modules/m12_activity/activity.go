@@ -4,8 +4,10 @@ package m12_activity
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -119,6 +121,74 @@ func (m *ActivityModule) collectRecentFiles() {
 
 func (m *ActivityModule) collectUSBDevices() {
 	m.usb = []USBDeviceDTO{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR\*\*' -ErrorAction SilentlyContinue | Select-Object FriendlyName, DeviceDesc, Mfg, SerialNumber, Class | ConvertTo-Json`)
+	output, err := cmd.Output()
+	if err != nil {
+		m.collectUSBDevicesFromRegistry()
+		return
+	}
+
+	var devices []map[string]interface{}
+	if err := json.Unmarshal(output, &devices); err != nil {
+		var single map[string]interface{}
+		if err := json.Unmarshal(output, &single); err == nil {
+			devices = []map[string]interface{}{single}
+		} else {
+			m.collectUSBDevicesFromRegistry()
+			return
+		}
+	}
+
+	for _, dev := range devices {
+		if dev["FriendlyName"] == nil {
+			continue
+		}
+		deviceID := ""
+		if dev["DeviceDesc"] != nil {
+			deviceID = dev["DeviceDesc"].(string)
+		}
+		name := ""
+		if dev["FriendlyName"] != nil {
+			name = dev["FriendlyName"].(string)
+		}
+
+		m.usb = append(m.usb, USBDeviceDTO{
+			DeviceID:   deviceID,
+			Name:       name,
+			LastInsert: time.Now(),
+			RiskLevel:  model.RiskLow,
+		})
+	}
+}
+
+func (m *ActivityModule) collectUSBDevicesFromRegistry() {
+	usbKeys := []string{
+		`HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR`,
+		`HKLM:\SYSTEM\CurrentControlSet\Enum\USB`,
+	}
+
+	for _, key := range usbKeys {
+		cmd := exec.Command("powershell", "-Command",
+			fmt.Sprintf(`Get-ItemProperty -Path '%s' -ErrorAction SilentlyContinue | ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue }`, key))
+		output, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "FriendlyName") || strings.Contains(line, "DeviceDesc") {
+				m.usb = append(m.usb, USBDeviceDTO{
+					DeviceID:   strings.TrimSpace(line),
+					Name:       "USB Device",
+					LastInsert: time.Now(),
+					RiskLevel:  model.RiskLow,
+				})
+			}
+		}
+	}
 }
 
 func (m *ActivityModule) collectBrowserHistory() {

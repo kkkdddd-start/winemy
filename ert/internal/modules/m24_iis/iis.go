@@ -51,11 +51,56 @@ func (m *IISModule) Init(ctx context.Context, s registry.Storage) error {
 func (m *IISModule) detectLogPaths() {
 	m.logPaths = map[string]string{}
 
-	m.logPaths["iis"] = `C:\inetpub\logs\LogFiles`
-	m.logPaths["apache"] = `C:\Apache24\logs`
-	m.logPaths["apache_xampp"] = `C:\xampp\apache\logs`
-	m.logPaths["nginx"] = `C:\nginx\logs`
-	m.logPaths["sql_server"] = `C:\Program Files\Microsoft SQL Server\MSSQL\LOG`
+	cmd := exec.Command("powershell", "-Command",
+		`$iisLogPaths = @(); try { Import-Module WebAdministration -ErrorAction Stop; Get-WebConfigurationProperty -Filter '//sites/site' -Name logFile.directory -PSPath 'IIS:\' -ErrorAction SilentlyContinue | ForEach-Object { $iisLogPaths += $_.Value } } catch { }; if($iisLogPaths.Count -eq 0) { $iisLogPaths += 'C:\inetpub\logs\LogFiles' }; $iisLogPaths | ConvertTo-Json`)
+	output, err := cmd.Output()
+	if err == nil {
+		var paths []string
+		if err := json.Unmarshal(output, &paths); err != nil {
+			var single string
+			if err := json.Unmarshal(output, &single); err == nil {
+				paths = []string{single}
+			}
+		}
+		for _, p := range paths {
+			if p != "" {
+				p = strings.Replace(p, "%SystemDrive%", "C:", 1)
+				m.logPaths["iis_detected"] = p
+			}
+		}
+	}
+
+	if m.logPaths["iis_detected"] == "" {
+		m.logPaths["iis"] = `C:\inetpub\logs\LogFiles`
+	} else {
+		m.logPaths["iis"] = m.logPaths["iis_detected"]
+	}
+
+	sqlLogPath := m.detectSQLServerLogPath()
+	if sqlLogPath != "" {
+		m.logPaths["sql_server"] = sqlLogPath
+	} else {
+		m.logPaths["sql_server"] = `C:\Program Files\Microsoft SQL Server\MSSQL\LOG`
+	}
+
+	apacheLogPaths := m.detectApacheLogPath()
+	if len(apacheLogPaths) > 0 {
+		m.logPaths["apache"] = apacheLogPaths[0]
+		if len(apacheLogPaths) > 1 {
+			m.logPaths["apache_xampp"] = apacheLogPaths[1]
+		}
+	} else {
+		m.logPaths["apache"] = `C:\Apache24\logs`
+		m.logPaths["apache_xampp"] = `C:\xampp\apache\logs`
+	}
+
+	nginxLogPath := m.detectNginxLogPath()
+	if nginxLogPath != "" {
+		m.logPaths["nginx"] = nginxLogPath
+	} else {
+		m.logPaths["nginx"] = `C:\nginx\logs`
+	}
+
 	m.logPaths["tomcat"] = `C:\Tomcat\logs`
 
 	programFiles := os.Getenv("ProgramFiles")
@@ -67,6 +112,62 @@ func (m *IISModule) detectLogPaths() {
 	if programFilesX86 != "" {
 		m.logPaths["iis_w3svc_x86"] = programFilesX86 + `\IIS\logs`
 	}
+}
+
+func (m *IISModule) detectSQLServerLogPath() string {
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference = 'SilentlyContinue'; $sqlPaths = @(); Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server' -Recurse | ForEach-Object { $key = $_; try { $instDir = (Get-ItemProperty -Path $key.PSPath -Name InstallDir -ErrorAction SilentlyContinue).InstallDir; if($instDir) { $logPath = $instDir + '\Log'; if(Test-Path $logPath) { $sqlPaths += $logPath } } } catch { } }; Get-ChildItem 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server' -Recurse | ForEach-Object { $key = $_; try { $instDir = (Get-ItemProperty -Path $key.PSPath -Name InstallDir -ErrorAction SilentlyContinue).InstallDir; if($instDir) { $logPath = $instDir + '\Log'; if(Test-Path $logPath) { $sqlPaths += $logPath } } } catch { } }; $sqlPaths | Select-Object -First 1`)
+	output, err := cmd.Output()
+	if err == nil {
+		path := strings.TrimSpace(string(output))
+		if path != "" && !strings.Contains(path, "Microsoft") {
+			return path
+		}
+	}
+	return ""
+}
+
+func (m *IISModule) detectApacheLogPath() []string {
+	paths := []string{}
+
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles != "" {
+		apachePath := programFiles + "\\Apache"
+		if _, err := os.Stat(apachePath); err == nil {
+			entries, _ := os.ReadDir(apachePath)
+			for _, entry := range entries {
+				if entry.IsDir() && strings.HasPrefix(entry.Name(), "Apache") {
+					logPath := apachePath + "\\" + entry.Name() + "\\logs"
+					if _, err := os.Stat(logPath); err == nil {
+						paths = append(paths, logPath)
+					}
+				}
+			}
+		}
+	}
+
+	xamppPath := `C:\xampp\apache\logs`
+	if _, err := os.Stat(xamppPath); err == nil {
+		paths = append(paths, xamppPath)
+	}
+
+	return paths
+}
+
+func (m *IISModule) detectNginxLogPath() string {
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference = 'SilentlyContinue'; $nginxPath = (Get-Command nginx -ErrorAction SilentlyContinue).Source; if($nginxPath) { $nginxDir = Split-Path $nginxPath; $logPath = $nginxDir + '\logs'; if(Test-Path $logPath) { Write-Output $logPath } else { Write-Output $nginxDir } } else { $commonPaths = @('C:\nginx\logs', 'C:\Program Files\nginx\logs', 'C:\Program Files (x86)\nginx\logs'); foreach($p in $commonPaths) { if(Test-Path $p) { Write-Output $p; break } } }`)
+	output, err := cmd.Output()
+	if err == nil {
+		path := strings.TrimSpace(string(output))
+		if path != "" && !strings.Contains(path, "nginx") {
+			if strings.HasSuffix(path, `\logs`) || strings.HasSuffix(path, `\\logs`) {
+				return path
+			}
+			return path + `\logs`
+		}
+	}
+	return ""
 }
 
 func (m *IISModule) Collect(ctx context.Context) error {

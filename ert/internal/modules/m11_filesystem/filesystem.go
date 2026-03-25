@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yourname/ert/internal/model"
@@ -17,17 +19,7 @@ import (
 type FilesystemModule struct {
 	ctx     context.Context
 	storage registry.Storage
-	files   []FileDTO
-}
-
-type FileDTO struct {
-	Path      string          `json:"path"`
-	Name      string          `json:"name"`
-	Size      uint64          `json:"size"`
-	Hash      string          `json:"hash"`
-	Modified  time.Time       `json:"modified"`
-	IsLarge   bool            `json:"is_large"`
-	RiskLevel model.RiskLevel `json:"risk_level"`
+	files   []model.FileDTO
 }
 
 func New() *FilesystemModule {
@@ -45,37 +37,150 @@ func (m *FilesystemModule) Init(ctx context.Context, s registry.Storage) error {
 }
 
 func (m *FilesystemModule) Collect(ctx context.Context) error {
-	m.files = []FileDTO{
-		{
-			Path:      "C:\\Windows\\System32\\config\\SYSTEM",
-			Name:      "SYSTEM",
-			Size:      20 * 1024 * 1024,
-			Hash:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-			Modified:  time.Now().AddDate(0, 0, -1),
-			IsLarge:   true,
-			RiskLevel: model.RiskMedium,
-		},
-		{
-			Path:      "C:\\Windows\\System32\\config\\SAM",
-			Name:      "SAM",
-			Size:      10 * 1024 * 1024,
-			Hash:      "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
-			Modified:  time.Now().AddDate(0, 0, -5),
-			IsLarge:   true,
-			RiskLevel: model.RiskHigh,
-		},
-		{
-			Path:      "C:\\Windows\\System32\\cmd.exe",
-			Name:      "cmd.exe",
-			Size:      350000,
-			Hash:      "139c3e9d4f8081b78a4bfc9faa92a2e5c74c69e04ef70c8f3b8b7f5e3c5d0e5c",
-			Modified:  time.Now().AddDate(0, -1, 0),
-			IsLarge:   false,
-			RiskLevel: model.RiskLow,
-		},
+	m.files = []model.FileDTO{}
+
+	scanPaths := []string{
+		`C:\Windows\System32`,
+		`C:\Program Files`,
+		`C:\Program Files (x86)`,
+		`C:\Users`,
+	}
+
+	for _, path := range scanPaths {
+		files, err := m.scanDirectory(path, 3)
+		if err == nil {
+			m.files = append(m.files, files...)
+		}
 	}
 
 	return nil
+}
+
+func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.FileDTO, error) {
+	var results []model.FileDTO
+	return results, filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+
+		if info.IsDir() {
+			if strings.Contains(strings.ToLower(path), "temp") ||
+				strings.Contains(strings.ToLower(path), "cache") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+
+		file := model.FileDTO{
+			Path:      path,
+			Name:      info.Name(),
+			Size:      uint64(info.Size()),
+			Modified:  info.ModTime(),
+			RiskLevel: model.RiskLow,
+		}
+
+		if ext == ".exe" || ext == ".dll" || ext == ".sys" {
+			hash, err := m.computeFileHash(path)
+			if err == nil {
+				file.Hash = hash
+				file.RiskLevel = assessFileRisk(path, hash)
+			}
+		}
+
+		if info.Size() > 100*1024*1024*1024 {
+			file.IsLarge = true
+		}
+
+		results = append(results, file)
+		return nil
+	})
+}
+
+func (m *FilesystemModule) computeFileHash(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func assessFileRisk(path, hash string) model.RiskLevel {
+	nameLower := strings.ToLower(path)
+
+	suspiciousExts := []string{".tmp", ".vbs", ".js", ".jse", ".vbe", ".ws", ".wsh", ".scr", ".pif", ".msi", ".msp"}
+
+	ext := strings.ToLower(filepath.Ext(nameLower))
+	for _, sus := range suspiciousExts {
+		if ext == sus {
+			return model.RiskMedium
+		}
+	}
+
+	if strings.Contains(nameLower, "temp") || strings.Contains(nameLower, "tmp") {
+		return model.RiskMedium
+	}
+
+	if strings.Contains(nameLower, "downloads") {
+		return model.RiskMedium
+	}
+
+	systemDirs := []string{`\windows\system32`, `\windows\syswow64`}
+	for _, sys := range systemDirs {
+		if strings.Contains(nameLower, sys) {
+			return model.RiskLow
+		}
+	}
+
+	return model.RiskLow
+}
+
+func (m *FilesystemModule) ScanPath(path string, recursive bool) ([]model.FileDTO, error) {
+	if recursive {
+		return m.scanDirectory(path, -1)
+	}
+
+	files, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []model.FileDTO
+	for _, f := range files {
+		info, _ := f.Info()
+		results = append(results, model.FileDTO{
+			Path:      filepath.Join(path, f.Name()),
+			Name:      f.Name(),
+			Size:      uint64(info.Size()),
+			Modified:  info.ModTime(),
+			RiskLevel: model.RiskLow,
+		})
+	}
+	return results, nil
+}
+
+func (m *FilesystemModule) Search(keyword string) ([]model.FileDTO, error) {
+	results := []model.FileDTO{}
+	keywordLower := strings.ToLower(keyword)
+	for _, f := range m.files {
+		if strings.Contains(strings.ToLower(f.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(f.Path), keywordLower) {
+			results = append(results, f)
+		}
+	}
+	return results, nil
+}
+
+func (m *FilesystemModule) GetFileHash(path string) (string, error) {
+	return m.computeFileHash(path)
 }
 
 func (m *FilesystemModule) Stop() error {
@@ -96,19 +201,4 @@ func (m *FilesystemModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
-}
-
-func computeFileHash(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }

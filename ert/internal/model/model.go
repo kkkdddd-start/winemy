@@ -66,6 +66,7 @@ type SystemInfo struct {
 
 type ProcessDTO struct {
 	PID         uint32    `json:"pid"`
+	PPID        uint32    `json:"ppid"`
 	Name        string    `json:"name"`
 	Path        string    `json:"path"`
 	CommandLine string    `json:"command_line"`
@@ -74,6 +75,12 @@ type ProcessDTO struct {
 	Memory      uint64    `json:"memory"`
 	StartTime   time.Time `json:"start_time"`
 	RiskLevel   RiskLevel `json:"risk_level"`
+}
+
+type ProcessTreeNode struct {
+	PID      uint32             `json:"pid"`
+	Name     string             `json:"name"`
+	Children []*ProcessTreeNode `json:"children"`
 }
 
 type NetworkConnDTO struct {
@@ -124,6 +131,16 @@ type EventLogDTO struct {
 	TimeCreated time.Time `json:"time_created"`
 	RawXML      string    `json:"raw_xml"`
 	Message     string    `json:"message"`
+}
+
+type FileDTO struct {
+	Path      string    `json:"path"`
+	Name      string    `json:"name"`
+	Size      uint64    `json:"size"`
+	Hash      string    `json:"hash"`
+	Modified  time.Time `json:"modified"`
+	IsLarge   bool      `json:"is_large"`
+	RiskLevel RiskLevel `json:"risk_level"`
 }
 
 type AccountDTO struct {

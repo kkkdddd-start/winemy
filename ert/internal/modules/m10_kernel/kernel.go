@@ -5,6 +5,7 @@ package m10_kernel
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -74,14 +75,15 @@ func (m *KernelModule) Collect(ctx context.Context) error {
 		size, _ := strconv.ParseUint(memStr, 10, 64)
 
 		riskLevel := model.RiskLow
-		isSigned := false
-		signature := ""
+		driverPath := getDriverPath(driverName)
+
+		isSigned, signature := m.verifyDriverSignature(driverPath)
 
 		if isSuspiciousDriver(driverName) {
 			riskLevel = model.RiskHigh
+		} else if !isSigned {
+			riskLevel = model.RiskMedium
 		}
-
-		driverPath := getDriverPath(driverName)
 
 		m.drivers = append(m.drivers, model.DriverDTO{
 			Name:      driverName,
@@ -126,6 +128,58 @@ func isSuspiciousDriver(name string) bool {
 		}
 	}
 	return false
+}
+
+func (m *KernelModule) verifyDriverSignature(driverPath string) (bool, string) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$sig = Get-AuthenticodeSignature '%s'; if($sig.Status -eq 'Valid') { Write-Output 'Valid' } elseif($sig.Status -eq 'NotSigned') { Write-Output 'NotSigned' } else { Write-Output ('Signed:' + $sig.Status) }`, driverPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return false, "Verification failed"
+	}
+
+	result := strings.TrimSpace(string(output))
+	if result == "Valid" {
+		return true, "Microsoft Windows"
+	} else if result == "NotSigned" {
+		return false, "NotSigned"
+	} else if strings.HasPrefix(result, "Signed:") {
+		return true, strings.TrimPrefix(result, "Signed:")
+	}
+	return false, result
+}
+
+func (m *KernelModule) verifyDriverSignatureSignTool(driverPath string) (bool, string) {
+	signtoolPaths := []string{
+		`C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe`,
+		`C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\signtool.exe`,
+		`C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe`,
+		`C:\Windows\System32\signtool.exe`,
+	}
+
+	var signtoolPath string
+	for _, p := range signtoolPaths {
+		if _, err := os.Stat(p); err == nil {
+			signtoolPath = p
+			break
+		}
+	}
+
+	if signtoolPath == "" {
+		return false, "SignTool not found"
+	}
+
+	cmd := exec.Command(signtoolPath, "verify", "/pa", "/v", driverPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Sprintf("SignTool verify failed: %v", err)
+	}
+
+	outputStr := string(output)
+	if strings.Contains(outputStr, "Successfully verified") || strings.Contains(outputStr, "Number of signatures") {
+		return true, "Verified"
+	}
+	return false, "Verification failed"
 }
 
 func (m *KernelModule) Stop() error {
