@@ -8,6 +8,7 @@ import (
 
 	"github.com/yourname/ert/internal/config"
 	"github.com/yourname/ert/internal/core/storage"
+	"github.com/yourname/ert/internal/model"
 	"github.com/yourname/ert/internal/modules/m10_kernel"
 	"github.com/yourname/ert/internal/modules/m11_filesystem"
 	"github.com/yourname/ert/internal/modules/m12_activity"
@@ -129,6 +130,79 @@ func (a *App) KillProcess(pid uint32) error {
 	return nil
 }
 
+// GetProcessTree retrieves process tree structure
+// Wails binding for frontend API call
+func (a *App) GetProcessTree() ([]map[string]interface{}, error) {
+	module, err := a.reg.Get(2)
+	if err != nil {
+		return nil, err
+	}
+	if procModule, ok := module.(*m2_process.ProcessModule); ok {
+		tree := procModule.GetProcessTree()
+		result := make([]map[string]interface{}, len(tree))
+		for i, node := range tree {
+			result[i] = map[string]interface{}{
+				"pid":      node.PID,
+				"name":     node.Name,
+				"children": flattenProcessTree(node.Children),
+			}
+		}
+		return result, nil
+	}
+	return nil, nil
+}
+
+func flattenProcessTree(nodes []*model.ProcessTreeNode) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(nodes))
+	for i, node := range nodes {
+		result[i] = map[string]interface{}{
+			"pid":      node.PID,
+			"name":     node.Name,
+			"children": flattenProcessTree(node.Children),
+		}
+	}
+	return result
+}
+
+// StartService starts a Windows service
+// Wails binding for frontend API call
+func (a *App) StartService(serviceName string) error {
+	module, err := a.reg.Get(5)
+	if err != nil {
+		return err
+	}
+	if svcModule, ok := module.(*m5_service.ServiceModule); ok {
+		return svcModule.StartService(serviceName)
+	}
+	return nil
+}
+
+// StopService stops a Windows service
+// Wails binding for frontend API call
+func (a *App) StopService(serviceName string) error {
+	module, err := a.reg.Get(5)
+	if err != nil {
+		return err
+	}
+	if svcModule, ok := module.(*m5_service.ServiceModule); ok {
+		return svcModule.StopService(serviceName)
+	}
+	return nil
+}
+
+// RestartService restarts a Windows service
+// Wails binding for frontend API call
+func (a *App) RestartService(serviceName string) error {
+	module, err := a.reg.Get(5)
+	if err != nil {
+		return err
+	}
+	if svcModule, ok := module.(*m5_service.ServiceModule); ok {
+		return svcModule.RestartService(serviceName)
+	}
+	return nil
+}
+
 // GetNetworkList retrieves network connections
 // Wails binding for frontend API call
 func (a *App) GetNetworkList() ([]map[string]interface{}, error) {
@@ -151,6 +225,19 @@ func (a *App) GetServices() ([]map[string]interface{}, error) {
 // Wails binding for frontend API call
 func (a *App) GetScheduledTasks() ([]map[string]interface{}, error) {
 	return a.reg.GetModuleData(context.Background(), 6, "")
+}
+
+// ExportScheduledTaskToXML exports a scheduled task to XML
+// Wails binding for frontend API call
+func (a *App) ExportScheduledTaskToXML(taskName string, outputPath string) error {
+	module, err := a.reg.Get(6)
+	if err != nil {
+		return err
+	}
+	if schedModule, ok := module.(*m6_schedule.ScheduleModule); ok {
+		return schedModule.ExportTaskToXML(taskName, outputPath)
+	}
+	return nil
 }
 
 // GetMonitorData retrieves real-time monitoring data

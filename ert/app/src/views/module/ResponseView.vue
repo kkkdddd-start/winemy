@@ -470,7 +470,8 @@ async function handleKillProcess() {
       return
     }
 
-    await new Promise(resolve => setTimeout(resolve, 500))
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('kill_process', String(killProcessForm.value.pid))
 
     historyList.value.unshift({
       timestamp: new Date().toISOString(),
@@ -484,7 +485,7 @@ async function handleKillProcess() {
     killProcessDialogVisible.value = false
     ElMessage.success('进程已终止')
   } catch (error) {
-    ElMessage.error('进程查杀失败')
+    ElMessage.error('进程查杀失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     actionLoading.value = false
   }
@@ -498,7 +499,8 @@ async function handleIsolateFile() {
 
   actionLoading.value = true
   try {
-    await new Promise(resolve => setTimeout(resolve, 500))
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('isolate_file', isolateFileForm.value.path)
 
     historyList.value.unshift({
       timestamp: new Date().toISOString(),
@@ -511,7 +513,7 @@ async function handleIsolateFile() {
     isolateFileDialogVisible.value = false
     ElMessage.success('文件已隔离到隔离区')
   } catch (error) {
-    ElMessage.error('文件隔离失败')
+    ElMessage.error('文件隔离失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     actionLoading.value = false
   }
@@ -531,7 +533,8 @@ async function handleBlockIP() {
 
   actionLoading.value = true
   try {
-    await new Promise(resolve => setTimeout(resolve, 500))
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('block_ip', blockIPForm.value.ip)
 
     historyList.value.unshift({
       timestamp: new Date().toISOString(),
@@ -544,7 +547,7 @@ async function handleBlockIP() {
     blockIPDialogVisible.value = false
     ElMessage.success('IP 已封禁')
   } catch (error) {
-    ElMessage.error('IP 封禁失败')
+    ElMessage.error('IP 封禁失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     actionLoading.value = false
   }
@@ -558,7 +561,8 @@ async function handleDisableService() {
 
   actionLoading.value = true
   try {
-    await new Promise(resolve => setTimeout(resolve, 500))
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('disable_service', disableServiceForm.value.serviceName)
 
     historyList.value.unshift({
       timestamp: new Date().toISOString(),
@@ -571,7 +575,7 @@ async function handleDisableService() {
     disableServiceDialogVisible.value = false
     ElMessage.success('服务已禁用')
   } catch (error) {
-    ElMessage.error('服务禁用失败')
+    ElMessage.error('服务禁用失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     actionLoading.value = false
   }

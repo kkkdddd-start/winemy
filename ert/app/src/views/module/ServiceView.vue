@@ -239,27 +239,48 @@ function handleRowClick(row: ServiceInfo) {
 async function handleStart(row: ServiceInfo) {
   try {
     await ElMessageBox.confirm(`确定要启动服务 "${row.display_name}" 吗？`, '启动服务', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'info' })
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.StartService(row.name)
     ElMessage.success(`服务 ${row.display_name} 已启动`)
-  } catch {
-    ElMessage.info('已取消操作')
+    handleRefresh()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error('启动服务失败: ' + (error.message || error))
+    } else {
+      ElMessage.info('已取消操作')
+    }
   }
 }
 
 async function handleStop(row: ServiceInfo) {
   try {
     await ElMessageBox.confirm(`确定要停止服务 "${row.display_name}" 吗？`, '停止服务', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' })
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.StopService(row.name)
     ElMessage.warning(`服务 ${row.display_name} 已停止`)
-  } catch {
-    ElMessage.info('已取消操作')
+    handleRefresh()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error('停止服务失败: ' + (error.message || error))
+    } else {
+      ElMessage.info('已取消操作')
+    }
   }
 }
 
 async function handleRestart(row: ServiceInfo) {
   try {
     await ElMessageBox.confirm(`确定要重启服务 "${row.display_name}" 吗？`, '重启服务', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' })
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.RestartService(row.name)
     ElMessage.success(`服务 ${row.display_name} 正在重启...`)
-  } catch {
-    ElMessage.info('已取消操作')
+    handleRefresh()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error('重启服务失败: ' + (error.message || error))
+    } else {
+      ElMessage.info('已取消操作')
+    }
   }
 }
 
