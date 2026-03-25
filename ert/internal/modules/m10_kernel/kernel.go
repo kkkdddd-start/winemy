@@ -4,6 +4,7 @@ package m10_kernel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,59 +38,133 @@ func (m *KernelModule) Init(ctx context.Context, s registry.Storage) error {
 func (m *KernelModule) Collect(ctx context.Context) error {
 	m.drivers = []model.DriverDTO{}
 
-	output, err := exec.Command("tasklist", "/FI", "MODULES eq *.sys", "/FO", "CSV", "/NH").Output()
-	if err != nil {
-		m.drivers = append(m.drivers, model.DriverDTO{
-			Name:      "Error",
-			Path:      fmt.Sprintf("Failed to enumerate drivers: %v", err),
-			BaseAddr:  "0x0",
-			Size:      0,
-			IsSigned:  false,
-			Signature: "",
-			RiskLevel: model.RiskLow,
-		})
+	driverMap := make(map[string]driverInfo)
+
+	cmd := exec.Command("powershell", "-Command",
+		`Get-Process -Module -ErrorAction SilentlyContinue | Where-Object { $_.ModuleName -like '*.sys' } | Select-Object ModuleName, FileName, BaseAddress, ModuleMemorySize | ConvertTo-Json`)
+	output, err := cmd.Output()
+	if err == nil {
+		var modules []map[string]interface{}
+		if err := json.Unmarshal(output, &modules); err != nil {
+			var single map[string]interface{}
+			if err := json.Unmarshal(output, &single); err == nil {
+				modules = []map[string]interface{}{single}
+			}
+		}
+
+		for _, mod := range modules {
+			if mod["ModuleName"] == nil {
+				continue
+			}
+			name := mod["ModuleName"].(string)
+			if !strings.HasSuffix(strings.ToLower(name), ".sys") {
+				continue
+			}
+
+			path := ""
+			if p, ok := mod["FileName"].(string); ok {
+				path = p
+			}
+
+			baseAddr := "0x0"
+			if ba, ok := mod["BaseAddress"].(float64); ok {
+				baseAddr = fmt.Sprintf("0x%x", uint64(ba))
+			}
+
+			size := uint64(0)
+			if ms, ok := mod["ModuleMemorySize"].(float64); ok {
+				size = uint64(ms)
+			}
+
+			driverMap[name] = driverInfo{
+				Path:     path,
+				BaseAddr: baseAddr,
+				Size:     size,
+			}
+		}
+	}
+
+	if len(driverMap) == 0 {
+		output, err = exec.Command("tasklist", "/FI", "MODULES eq *.sys", "/FO", "CSV", "/NH").Output()
+		if err != nil {
+			m.drivers = append(m.drivers, model.DriverDTO{
+				Name:      "Error",
+				Path:      fmt.Sprintf("Failed to enumerate drivers: %v", err),
+				BaseAddr:  "0x0",
+				Size:      0,
+				IsSigned:  false,
+				Signature: "",
+				RiskLevel: model.RiskLow,
+			})
+			return nil
+		}
+
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			fields := strings.Split(line, ",")
+			if len(fields) < 5 {
+				continue
+			}
+
+			driverName := strings.Trim(fields[0], "\"")
+			if !strings.HasSuffix(strings.ToLower(driverName), ".sys") {
+				continue
+			}
+
+			memStr := strings.Trim(fields[4], "\"")
+			memStr = strings.ReplaceAll(memStr, ",", "")
+
+			size, _ := strconv.ParseUint(memStr, 10, 64)
+
+			riskLevel := model.RiskLow
+			driverPath := getDriverPath(driverName)
+
+			isSigned, signature := m.verifyDriverSignature(driverPath)
+
+			if isSuspiciousDriver(driverName) {
+				riskLevel = model.RiskHigh
+			} else if !isSigned {
+				riskLevel = model.RiskMedium
+			}
+
+			m.drivers = append(m.drivers, model.DriverDTO{
+				Name:      driverName,
+				Path:      driverPath,
+				BaseAddr:  "0x0",
+				Size:      size,
+				IsSigned:  isSigned,
+				Signature: signature,
+				RiskLevel: riskLevel,
+			})
+		}
 		return nil
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		fields := strings.Split(line, ",")
-		if len(fields) < 5 {
-			continue
-		}
-
-		driverName := strings.Trim(fields[0], "\"")
-		if !strings.HasSuffix(strings.ToLower(driverName), ".sys") {
-			continue
-		}
-
-		_ = strings.Trim(fields[1], "\"")
-		memStr := strings.Trim(fields[4], "\"")
-		memStr = strings.ReplaceAll(memStr, ",", "")
-
-		size, _ := strconv.ParseUint(memStr, 10, 64)
-
+	for name, info := range driverMap {
 		riskLevel := model.RiskLow
-		driverPath := getDriverPath(driverName)
+		driverPath := info.Path
+		if driverPath == "" {
+			driverPath = getDriverPath(name)
+		}
 
 		isSigned, signature := m.verifyDriverSignature(driverPath)
 
-		if isSuspiciousDriver(driverName) {
+		if isSuspiciousDriver(name) {
 			riskLevel = model.RiskHigh
 		} else if !isSigned {
 			riskLevel = model.RiskMedium
 		}
 
 		m.drivers = append(m.drivers, model.DriverDTO{
-			Name:      driverName,
+			Name:      name,
 			Path:      driverPath,
-			BaseAddr:  "0x0",
-			Size:      size,
+			BaseAddr:  info.BaseAddr,
+			Size:      info.Size,
 			IsSigned:  isSigned,
 			Signature: signature,
 			RiskLevel: riskLevel,
@@ -97,6 +172,12 @@ func (m *KernelModule) Collect(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+type driverInfo struct {
+	Path     string
+	BaseAddr string
+	Size     uint64
 }
 
 func getDriverPath(driverName string) string {

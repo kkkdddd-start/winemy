@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -60,24 +62,29 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 	var results []model.FileDTO
 	return results, filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return filepath.SkipDir
+			return nil
 		}
 
 		if info.IsDir() {
-			if strings.Contains(strings.ToLower(path), "temp") ||
-				strings.Contains(strings.ToLower(path), "cache") {
+			pathLower := strings.ToLower(path)
+			if strings.Contains(pathLower, "temp") ||
+				strings.Contains(pathLower, "tmp") ||
+				strings.Contains(pathLower, "$recycle.bin") ||
+				strings.Contains(pathLower, "system volume information") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
 		ext := strings.ToLower(filepath.Ext(path))
+		nameLower := strings.ToLower(info.Name())
 
 		file := model.FileDTO{
 			Path:      path,
 			Name:      info.Name(),
 			Size:      uint64(info.Size()),
 			Modified:  info.ModTime(),
+			Created:   info.ModTime(),
 			RiskLevel: model.RiskLow,
 		}
 
@@ -85,12 +92,38 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 			hash, err := m.computeFileHash(path)
 			if err == nil {
 				file.Hash = hash
-				file.RiskLevel = assessFileRisk(path, hash)
 			}
+
+			signed, sig := m.verifyAuthenticode(path)
+			file.IsSigned = signed
+			file.Signature = sig
 		}
+
+		file.IsHidden = m.isHiddenFile(path)
+
+		if strings.HasPrefix(nameLower, "~$") || strings.HasPrefix(nameLower, "~") {
+			file.IsSystem = true
+		}
+
+		file.HasADS = m.checkADS(path)
 
 		if info.Size() > 100*1024*1024*1024 {
 			file.IsLarge = true
+		}
+
+		if ext == ".tmp" || ext == ".vbs" || ext == ".js" || ext == ".jse" ||
+			ext == ".vbe" || ext == ".ws" || ext == ".wsh" || ext == ".scr" ||
+			ext == ".pif" || ext == ".msi" || ext == ".msp" || ext == ".bat" ||
+			ext == ".cmd" || ext == ".ps1" || ext == ".psm1" || ext == ".vbs" {
+			file.RiskLevel = model.RiskMedium
+		}
+
+		if strings.Contains(strings.ToLower(path), "\\temp\\") ||
+			strings.Contains(strings.ToLower(path), "\\tmp\\") ||
+			strings.Contains(strings.ToLower(path), "\\downloads\\") {
+			if file.RiskLevel < model.RiskMedium {
+				file.RiskLevel = model.RiskMedium
+			}
 		}
 
 		results = append(results, file)
@@ -141,6 +174,45 @@ func assessFileRisk(path, hash string) model.RiskLevel {
 	}
 
 	return model.RiskLow
+}
+
+func (m *FilesystemModule) verifyAuthenticode(path string) (bool, string) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$sig = Get-AuthenticodeSignature '%s' -ErrorAction SilentlyContinue; if($sig.Status -eq 'Valid') { Write-Output 'Signed' } elseif($sig.SignerCertificate -ne $null) { Write-Output ('SignedBy:' + $sig.SignerCertificate.Subject) } else { Write-Output ('NotSigned:' + $sig.Status) }`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return false, "Verification failed"
+	}
+
+	result := strings.TrimSpace(string(output))
+	if strings.HasPrefix(result, "SignedBy:") {
+		return true, strings.TrimPrefix(result, "SignedBy:")
+	} else if result == "Signed" {
+		return true, "Valid signature"
+	} else if strings.HasPrefix(result, "NotSigned:") {
+		return false, strings.TrimPrefix(result, "NotSigned:")
+	}
+	return false, result
+}
+
+func (m *FilesystemModule) checkADS(path string) bool {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$streams = Get-Item '%s' -Stream * -ErrorAction SilentlyContinue; if($streams.Count -gt 1) { Write-Output 'true' } else { Write-Output 'false' }`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(output)), "true")
+}
+
+func (m *FilesystemModule) isHiddenFile(path string) bool {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$attr = Get-Item '%s' -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Attributes; if($attr -match 'Hidden') { Write-Output 'true' } else { Write-Output 'false' }`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(output)), "true")
 }
 
 func (m *FilesystemModule) ScanPath(path string, recursive bool) ([]model.FileDTO, error) {
@@ -196,7 +268,13 @@ func (m *FilesystemModule) GetData() ([]map[string]interface{}, error) {
 			"size":       f.Size,
 			"hash":       f.Hash,
 			"modified":   f.Modified.Format(time.RFC3339),
+			"created":    f.Created.Format(time.RFC3339),
 			"is_large":   f.IsLarge,
+			"is_hidden":  f.IsHidden,
+			"is_system":  f.IsSystem,
+			"is_signed":  f.IsSigned,
+			"signature":  f.Signature,
+			"has_ads":    f.HasADS,
 			"risk_level": f.RiskLevel,
 		})
 	}

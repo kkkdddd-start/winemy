@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -84,7 +85,23 @@ func (m *ProcessModule) Collect(ctx context.Context) error {
 }
 
 func getProcessUser(p *process.Process) string {
-	return ""
+	pid := p.Pid
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$proc = Get-Process -Id %d -ErrorAction SilentlyContinue; if($proc -and $proc.Path) { (Get-WmiObject Win32_Process -Filter "ProcessId=%d" -ErrorAction SilentlyContinue).GetOwner().User }`, pid, pid))
+	output, err := cmd.Output()
+	if err != nil {
+		cmd = exec.Command("powershell", "-Command",
+			fmt.Sprintf(`(Get-WmiObject Win32_Process -Filter "ProcessId=%d" -ErrorAction SilentlyContinue).GetOwner().User`, pid))
+		output, err = cmd.Output()
+		if err != nil {
+			return ""
+		}
+	}
+	user := strings.TrimSpace(string(output))
+	if user == "" || user == "NULL" {
+		return ""
+	}
+	return user
 }
 
 func assessRiskLevel(name, path string, cmdline []string) model.RiskLevel {
@@ -208,15 +225,56 @@ func (m *ProcessModule) DumpProcess(pid uint32, outputDir string) (string, error
 	}
 
 	name, _ := p.Name()
+	if name == "" {
+		name = "unknown"
+	}
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	dumpFile := filepath.Join(outputDir, fmt.Sprintf("proc_%d_%s_%s.dmp",
-		pid, name, time.Now().Format("20060102150405")))
+	timestamp := time.Now().Format("20060102150405")
+	dumpFile := filepath.Join(outputDir, fmt.Sprintf("proc_%d_%s_%s.dmp", pid, name, timestamp))
 
-	return dumpFile, nil
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$procdump = Get-Command procdump -ErrorAction SilentlyContinue; if($procdump) { procdump -accepteula -ma %d "%s" } else { Add-Type -AssemblyName System.Diagnostics; $proc = Get-Process -Id %d; $dump = [System.Diagnostics.ProcessModule]::new(); $fs = [System.IO.File]::Create("%s"); $ptr = $proc.MainModule.BaseAddress; [void][System.Diagnostics.ProcessModule].GetMethod("GetModuleMemory", [System.Reflection.BindingFlags]36).Invoke($null, @($ptr, $fs)); $fs.Close() }`, pid, dumpFile, pid, dumpFile))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.WriteFile(dumpFile+".txt", output, 0644)
+	}
+
+	if _, err := os.Stat(dumpFile); os.IsNotExist(err) {
+		miniDumpCmd := exec.Command("powershell", "-Command",
+			fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'; Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.IO;
+public class MiniDump {
+    [DllImport("dbghelp.dll", SetLastError=true)]
+    public static extern bool MiniDumpWriteDump(IntPtr hProcess, uint processId, IntPtr hFile, uint dumpType, IntPtr expParam, IntPtr userStreamParam, IntPtr callbackParam);
+    public static uint DUMP_NORMAL = 0;
+}
+"@
+$hProcess = (Get-Process -Id %d).Handle
+$fs = [System.IO.File]::Create("%s")
+MiniDump::MiniDumpWriteDump($hProcess, %d, $fs.Handle, MiniDump::DUMP_NORMAL, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+$fs.Close()
+if(Test-Path "%s") { Write-Output "SUCCESS" } else { Write-Output "FAILED" }`, pid, dumpFile, pid, dumpFile))
+		miniDumpOutput, _ := miniDumpCmd.CombinedOutput()
+		if strings.Contains(string(miniDumpOutput), "SUCCESS") {
+			if _, err := os.Stat(dumpFile); err == nil {
+				return dumpFile, nil
+			}
+		}
+		return "", fmt.Errorf("failed to dump process: %s", string(miniDumpOutput))
+	}
+
+	if _, err := os.Stat(dumpFile); err == nil {
+		return dumpFile, nil
+	}
+
+	return dumpFile, fmt.Errorf("dump file not created")
 }
 
 func (m *ProcessModule) Stop() error {

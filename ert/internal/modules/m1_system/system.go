@@ -77,6 +77,11 @@ func (m *SystemModule) Collect(ctx context.Context) error {
 		return err
 	}
 	m.info = info
+
+	if err := m.collectRealtimeMetrics(); err != nil {
+		m.metrics = &RealtimeMetrics{}
+	}
+
 	return nil
 }
 
@@ -175,19 +180,38 @@ func (m *SystemModule) collectSystemInfo() (*model.SystemInfo, error) {
 
 	ifaces, err := net.Interfaces()
 	if err == nil {
-		info.IsDomain = false
 		for _, iface := range ifaces {
 			for _, addr := range iface.Addrs {
 				addrStr := addr.Addr
 				if isPrivateIP(addrStr) {
-					info.IsDomain = false
 					break
 				}
 			}
 		}
 	}
 
+	m.checkDomainMembership(info)
+
 	return info, nil
+}
+
+func (m *SystemModule) checkDomainMembership(info *model.SystemInfo) {
+	cmd := exec.Command("powershell", "-Command",
+		`(Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain`)
+	output, err := cmd.Output()
+	if err == nil {
+		result := strings.TrimSpace(string(output))
+		info.IsDomain = strings.ToLower(result) == "true"
+	}
+
+	if info.IsDomain {
+		cmd = exec.Command("powershell", "-Command",
+			`(Get-CimInstance -ClassName Win32_ComputerSystem).Domain`)
+		output, err := cmd.Output()
+		if err == nil {
+			info.DomainName = strings.TrimSpace(string(output))
+		}
+	}
 }
 
 func isPrivateIP(ip string) bool {

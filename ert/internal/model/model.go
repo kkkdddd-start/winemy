@@ -139,7 +139,13 @@ type FileDTO struct {
 	Size      uint64    `json:"size"`
 	Hash      string    `json:"hash"`
 	Modified  time.Time `json:"modified"`
+	Created   time.Time `json:"created"`
 	IsLarge   bool      `json:"is_large"`
+	IsHidden  bool      `json:"is_hidden"`
+	IsSystem  bool      `json:"is_system"`
+	IsSigned  bool      `json:"is_signed"`
+	Signature string    `json:"signature"`
+	HasADS    bool      `json:"has_ads"`
 	RiskLevel RiskLevel `json:"risk_level"`
 }
 

@@ -229,13 +229,169 @@ func (m *ActivityModule) collectBrowserHistory() {
 }
 
 func (m *ActivityModule) readBrowserHistory(browserName, dbPath string) {
-	if browserName == "Chrome" || browserName == "Edge" {
-		m.browser = append(m.browser, BrowserHistoryDTO{
-			URL:       fmt.Sprintf("Browser: %s, History DB: %s", browserName, dbPath),
-			Title:     "Browser history requires database reading (SQLite)",
-			VisitedAt: time.Time{},
-			RiskLevel: model.RiskLow,
-		})
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return
+	}
+
+	switch browserName {
+	case "Chrome", "Edge":
+		m.readChromeEdgeHistory(browserName, dbPath)
+	case "Firefox":
+		m.readFirefoxHistory(dbPath)
+	}
+}
+
+func (m *ActivityModule) readChromeEdgeHistory(browserName, dbPath string) {
+	tempDb := dbPath + ".tmp"
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$history = '%s'
+if(Test-Path $history) {
+    Copy-Item $history '%s' -Force
+    $conn = New-Object System.Data.SQLite.SQLiteConnection
+    $conn.ConnectionString = 'Data Source=%s;Version=3;'
+    $conn.Open()
+    $cmd = $conn.CreateCommand()
+    $cmd.CommandText = 'SELECT url, title, visit_count, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 100'
+    $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter $cmd
+    $dataset = New-Object System.Data.DataSet
+    [void]$adapter.Fill($dataset)
+    $conn.Close()
+    Remove-Item '%s' -Force -ErrorAction SilentlyContinue
+    $dataset.Tables[0] | ForEach-Object { Write-Output ($_.url + '|' + $_.title + '|' + $_.visit_count) }
+}`, dbPath, tempDb, tempDb, tempDb))
+
+	output, err := cmd.Output()
+	if err != nil {
+		m.readBrowserHistoryFallback(browserName, dbPath)
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) >= 1 {
+			url := parts[0]
+			title := ""
+			if len(parts) > 1 {
+				title = parts[1]
+			}
+
+			m.browser = append(m.browser, BrowserHistoryDTO{
+				URL:       url,
+				Title:     title,
+				VisitedAt: time.Now(),
+				RiskLevel: model.RiskLow,
+			})
+		}
+	}
+}
+
+func (m *ActivityModule) readFirefoxHistory(dbPath string) {
+	tempDb := dbPath + ".tmp"
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$places = '%s'
+if(Test-Path $places) {
+    Copy-Item $places '%s' -Force
+    $conn = New-Object System.Data.SQLite.SQLiteConnection
+    $conn.ConnectionString = 'Data Source=%s;Version=3;'
+    $conn.Open()
+    $cmd = $conn.CreateCommand()
+    $cmd.CommandText = 'SELECT url, title, visit_count FROM moz_places ORDER BY last_visit_date DESC LIMIT 100'
+    $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter $cmd
+    $dataset = New-Object System.Data.DataSet
+    [void]$adapter.Fill($dataset)
+    $conn.Close()
+    Remove-Item '%s' -Force -ErrorAction SilentlyContinue
+    $dataset.Tables[0] | ForEach-Object { Write-Output ($_.url + '|' + $_.title + '|' + $_.visit_count) }
+}`, dbPath, tempDb, tempDb, tempDb))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) >= 1 {
+			url := parts[0]
+			title := ""
+			if len(parts) > 1 {
+				title = parts[1]
+			}
+
+			m.browser = append(m.browser, BrowserHistoryDTO{
+				URL:       url,
+				Title:     title,
+				VisitedAt: time.Now(),
+				RiskLevel: model.RiskLow,
+			})
+		}
+	}
+}
+
+func (m *ActivityModule) readBrowserHistoryFallback(browserName, dbPath string) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$db = '%s'
+$tempDb = $db + '.bak'
+Copy-Item $db $tempDb -Force
+$lines = @()
+try {
+    $conn = New-Object System.Data.SQLite.SQLiteConnection
+    $conn.ConnectionString = 'Data Source=' + $tempDb + ';Version=3;'
+    $conn.Open()
+    $reader = $conn.CreateCommand()
+    $reader.CommandText = 'SELECT url, title FROM urls LIMIT 50'
+    $result = $reader.ExecuteReader()
+    while($result.Read()) {
+        $lines += $result['url'] + '|' + $result['title']
+    }
+    $result.Close()
+    $conn.Close()
+} catch { }
+Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+$lines`, dbPath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) >= 1 {
+			url := parts[0]
+			title := ""
+			if len(parts) > 1 {
+				title = parts[1]
+			}
+
+			m.browser = append(m.browser, BrowserHistoryDTO{
+				URL:       url,
+				Title:     title,
+				VisitedAt: time.Now(),
+				RiskLevel: model.RiskLow,
+			})
+		}
 	}
 }
 
