@@ -190,19 +190,43 @@ func (m *ResponseModule) RestoreRegistry(path string, valueName string) error {
 }
 
 func (m *ResponseModule) BlockIP(ip string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`New-NetFirewallRule -DisplayName "ERT Blocked IP %s" -Direction Inbound -Action Block -RemoteAddress %s -Protocol TCP -ErrorAction SilentlyContinue; if($?) { Write-Output "SUCCESS" } else { Write-Output "FAILED" }`, ip, ip))
+	output, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "SUCCESS") {
+		m.logAction("block_ip", map[string]interface{}{
+			"ip":     ip,
+			"status": "failed",
+			"error":  err.Error(),
+		})
+		return fmt.Errorf("failed to block IP: %s", err)
+	}
+
 	m.logAction("block_ip", map[string]interface{}{
 		"ip":      ip,
 		"status":  "success",
-		"message": "IP address blocked (rule added to firewall)",
+		"message": "IP address blocked via firewall rule",
 	})
 	return nil
 }
 
 func (m *ResponseModule) UnblockIP(ip string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`Remove-NetFirewallRule -DisplayName "ERT Blocked IP %s" -ErrorAction SilentlyContinue; if($?) { Write-Output "SUCCESS" } else { Write-Output "FAILED" }`, ip))
+	output, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "SUCCESS") {
+		m.logAction("unblock_ip", map[string]interface{}{
+			"ip":     ip,
+			"status": "failed",
+			"error":  err.Error(),
+		})
+		return fmt.Errorf("failed to unblock IP: %s", err)
+	}
+
 	m.logAction("unblock_ip", map[string]interface{}{
 		"ip":      ip,
 		"status":  "success",
-		"message": "IP address unblocked (rule removed from firewall)",
+		"message": "IP address unblocked, firewall rule removed",
 	})
 	return nil
 }

@@ -67,7 +67,8 @@
     <div class="content-area">
       <el-card>
         <el-table 
-          :data="filteredProcesses" 
+          v-if="viewMode === 'list'"
+          :data="paginatedProcesses" 
           v-loading="loading" 
           stripe 
           @selection-change="handleSelectionChange"
@@ -112,8 +113,28 @@
           </el-table-column>
         </el-table>
 
+        <el-tree
+          v-else
+          :data="processTree"
+          :props="{ label: 'name', children: 'children' }"
+          default-expand-all
+          node-key="pid"
+          :expand-on-click-node="false"
+        >
+          <template #default="{ node, data }">
+            <span class="tree-node">
+              <span class="tree-node-label">{{ data.name }}</span>
+              <span class="tree-node-pid">PID: {{ data.pid }}</span>
+              <span v-if="data.risk_level > 1" class="tree-node-risk">
+                <el-tag type="danger" size="small">风险</el-tag>
+              </span>
+            </span>
+          </template>
+        </el-tree>
+
         <div class="pagination-area">
           <el-pagination
+            v-if="viewMode === 'list'"
             v-model:current-page="currentPage"
             v-model:page-size="pageSize"
             :total="filteredProcesses.length"
@@ -209,6 +230,7 @@ const selectedProcesses = ref<ProcessInfo[]>([])
 const processCount = computed(() => processes.value.length)
 
 const processes = ref<ProcessInfo[]>([])
+const processTree = ref<any[]>([])
 
 const filteredProcesses = computed(() => {
   let result = processes.value
@@ -221,6 +243,12 @@ const filteredProcesses = computed(() => {
     )
   }
   return result
+})
+
+const paginatedProcesses = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return filteredProcesses.value.slice(start, end)
 })
 
 const protectedProcesses = ['System', 'lsass.exe', 'winlogon.exe', 'csrss.exe', 'smss.exe', 'services.exe', 'wininit.exe']
@@ -334,9 +362,13 @@ async function handleRefresh() {
   loading.value = true
   try {
     const { Go } = await import('@wailsjs/go/main/App')
-    const result = await Go.GetProcessList()
-    if (result && Array.isArray(result)) {
-      processes.value = result.map((p: any) => ({
+    const [listResult, treeResult] = await Promise.all([
+      Go.GetProcessList(),
+      Go.GetProcessTree()
+    ])
+    
+    if (listResult && Array.isArray(listResult)) {
+      processes.value = listResult.map((p: any) => ({
         pid: p.pid,
         name: p.name || '',
         path: p.path || '',
@@ -347,6 +379,11 @@ async function handleRefresh() {
         risk_level: p.risk_level || 0
       }))
     }
+    
+    if (treeResult && Array.isArray(treeResult)) {
+      processTree.value = treeResult
+    }
+    
     ElMessage.success('刷新成功')
   } catch (error) {
     console.error('Failed to load processes:', error)
@@ -418,4 +455,28 @@ function handlePageChange(page: number) {
 
 :deep(.risk-critical-row) { background-color: rgba(245, 108, 108, 0.1) !important; }
 :deep(.risk-high-row) { background-color: rgba(230, 162, 60, 0.1) !important; }
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.tree-node-label {
+  font-weight: 500;
+}
+
+.tree-node-pid {
+  color: #909399;
+  font-size: 12px;
+}
+
+.tree-node-risk {
+  margin-left: 8px;
+}
+
+:deep(.el-tree-node__content) {
+  padding: 4px 0;
+}
 </style>
