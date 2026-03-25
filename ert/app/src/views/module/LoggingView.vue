@@ -293,7 +293,7 @@ function handleCurrentChange() {}
 async function loadLogList() {
   loading.value = true
   try {
-    const data = await Go.GetLogList()
+    const data = await Go.GetEventLogs('', '', 0)
     if (data) {
       logList.value = data as LogInfo[]
     }

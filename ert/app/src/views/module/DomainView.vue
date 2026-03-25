@@ -238,9 +238,9 @@ const paginatedData = computed(() => {
 async function loadDomainList() {
   loading.value = true
   try {
-    const data = await Go.GetDomainList()
+    const data = await Go.GetDomainInfo()
     if (data) {
-      domainList.value = data as DomainInfo[]
+      domainList.value = Array.isArray(data) ? data as DomainInfo[] : [data as DomainInfo]
     }
   } catch (error) {
     console.error('Failed to load domain list:', error)

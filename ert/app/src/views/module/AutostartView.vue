@@ -259,7 +259,7 @@ function getRiskLevel(risk: string): number {
 async function loadAutostartList() {
   loading.value = true
   try {
-    const data = await Go.GetAutostartList()
+    const data = await Go.GetAutostartItems()
     if (data) {
       autostartList.value = data as AutostartInfo[]
     }

@@ -281,7 +281,7 @@ function handleCurrentChange() {}
 async function loadActivityList() {
   loading.value = true
   try {
-    const data = await Go.GetActivityList()
+    const data = await Go.GetActivity()
     if (data) {
       activityList.value = data as ActivityInfo[]
     }

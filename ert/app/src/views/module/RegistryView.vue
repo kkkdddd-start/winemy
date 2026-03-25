@@ -173,20 +173,13 @@ const activeFeature = ref('key-detection')
 const activeView = ref('table')
 const selectedItem = ref<RegistryItem | null>(null)
 
-const mockRegistryData = ref<RegistryItem[]>([
-  { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'SecurityHealth', value: 'C:\\Windows\\System32\\SecurityHealth.exe', value_type: 'REG_SZ', risk_level: 0, modified: '2024-01-15 10:30:00', description: 'Windows 安全中心' },
-  { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'OneDrive', value: 'C:\\Program Files\\OneDrive\\OneDrive.exe', value_type: 'REG_SZ', risk_level: 1, modified: '2024-02-20 14:22:00', description: 'OneDrive 同步客户端' },
-  { path: 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'WeChat', value: 'C:\\Program Files\\Tencent\\WeChat\\WeChat.exe', value_type: 'REG_SZ', risk_level: 2, modified: '2024-03-10 09:15:00', description: '微信启动项' },
-  { path: 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\BITS', name: 'Start', value: '2', value_type: 'REG_DWORD', risk_level: 0, modified: '2023-12-01 08:00:00', description: '后台智能传输服务' },
-  { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders', name: 'Common Startup', value: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup', value_type: 'REG_EXPAND_SZ', risk_level: 1, modified: '2023-11-20 16:45:00', description: '公共启动文件夹' },
-  { path: 'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'QQ', value: 'C:\\Program Files\\Tencent\\QQ\\QQ.exe', value_type: 'REG_SZ', risk_level: 2, modified: '2024-03-18 11:30:00', description: 'QQ 启动项 - 可疑' },
-  { path: 'HKCU\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon', name: 'Userinit', value: 'C:\\Windows\\system32\\userinit.exe', value_type: 'REG_SZ', risk_level: 3, modified: '2024-01-05 07:30:00', description: '用户登录初始化 - 关键系统项' },
-  { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon', name: 'Shell', value: 'explorer.exe', value_type: 'REG_SZ', risk_level: 0, modified: '2023-10-15 12:00:00', description: 'Windows 外壳程序' },
-])
+const mockRegistryData = ref<RegistryItem[]>([])
+
+const registryData = ref<RegistryItem[]>([])
 
 const treeData = computed(() => {
   const root: Record<string, any> = {}
-  mockRegistryData.value.forEach(item => {
+  registryData.value.forEach(item => {
     const parts = item.path.split('\\')
     let current = root
     parts.forEach((part, index) => {
@@ -223,7 +216,7 @@ const treeProps = {
 }
 
 const filteredRegistryList = computed(() => {
-  let result = mockRegistryData.value
+  let result = registryData.value
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase()
     result = result.filter(r =>
@@ -258,12 +251,29 @@ function handleNodeClick(data: RegistryItem) {
   }
 }
 
-function handleRefresh() {
+async function handleRefresh() {
   loading.value = true
-  setTimeout(() => {
-    loading.value = false
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetRegistryKeys()
+    if (result && Array.isArray(result)) {
+      registryData.value = result.map((r: any) => ({
+        path: r.path || '',
+        name: r.name || '',
+        value: r.value || '',
+        value_type: r.value_type || 'REG_SZ',
+        risk_level: r.risk_level || 0,
+        modified: r.modified || '',
+        description: r.description || ''
+      }))
+    }
     ElMessage.success('刷新成功')
-  }, 500)
+  } catch (error) {
+    console.error('Failed to load registry data:', error)
+    ElMessage.error('刷新失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleExport() {

@@ -303,7 +303,7 @@ function handleCurrentChange() {}
 async function loadAccountList() {
   loading.value = true
   try {
-    const data = await Go.GetAccountList()
+    const data = await Go.GetAccounts()
     if (data) {
       accountList.value = data as AccountInfo[]
     }

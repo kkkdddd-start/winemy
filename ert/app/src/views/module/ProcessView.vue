@@ -206,20 +206,12 @@ const dumpForm = ref({ type: 'mini' })
 
 const selectedProcesses = ref<ProcessInfo[]>([])
 
-const processCount = computed(() => mockProcesses.length)
+const processCount = computed(() => processes.value.length)
 
-const mockProcesses = ref<ProcessInfo[]>([
-  { pid: 4, name: 'System', path: 'N/A', cpu: 0.5, memory: 0.1, risk_level: 0 },
-  { pid: 256, name: 'svchost.exe', path: 'C:\\Windows\\System32', user: 'SYSTEM', cpu: 0.2, memory: 0.5, risk_level: 0 },
-  { pid: 512, name: 'explorer.exe', path: 'C:\\Windows', user: 'Administrator', cpu: 1.5, memory: 2.1, risk_level: 0 },
-  { pid: 1024, name: 'chrome.exe', path: 'C:\\Program Files\\Google\\Chrome', user: 'Administrator', cpu: 15.2, memory: 8.5, risk_level: 0 },
-  { pid: 1280, name: 'mimikatz.exe', path: 'C:\\Users\\Admin\\Downloads', user: 'Administrator', cpu: 0.1, memory: 0.3, risk_level: 3 },
-  { pid: 1536, name: 'notepad.exe', path: 'C:\\Windows\\System32', user: 'Administrator', cpu: 0.1, memory: 0.2, risk_level: 0 },
-  { pid: 2048, name: 'lsass.exe', path: 'C:\\Windows\\System32', user: 'SYSTEM', cpu: 0.3, memory: 0.8, risk_level: 0 },
-])
+const processes = ref<ProcessInfo[]>([])
 
 const filteredProcesses = computed(() => {
-  let result = mockProcesses.value
+  let result = processes.value
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase()
     result = result.filter(p => 
@@ -283,12 +275,13 @@ async function confirmKill() {
   if (!selectedProcess.value) return
   actionLoading.value = true
   try {
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.KillProcess(selectedProcess.value.pid)
     ElMessage.success(`进程 ${selectedProcess.value.name} 已终止`)
     killDialogVisible.value = false
     handleRefresh()
   } catch (error) {
-    ElMessage.error('进程查杀失败')
+    ElMessage.error('进程查杀失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     actionLoading.value = false
   }
@@ -308,18 +301,20 @@ async function confirmDump() {
   dumpProgressStatus.value = ''
 
   try {
-    for (let i = 0; i <= 100; i += 10) {
-      await new Promise(resolve => setTimeout(resolve, 200))
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.DumpProcess(selectedProcess.value.pid)
+    for (let i = 0; i <= 100; i += 20) {
+      await new Promise(resolve => setTimeout(resolve, 100))
       dumpProgress.value = i
       dumpProgressMessage.value = `Dump 进度: ${i}%`
     }
     dumpProgressStatus.value = 'success'
-    dumpProgressMessage.value = 'Dump 完成！'
+    dumpProgressMessage.value = `Dump 完成！文件: ${result || 'unknown'}`
     ElMessage.success('进程 Dump 已完成')
     dumpDialogVisible.value = false
   } catch (error) {
     dumpProgressStatus.value = 'exception'
-    dumpProgressMessage.value = 'Dump 失败'
+    dumpProgressMessage.value = 'Dump 失败: ' + (error instanceof Error ? error.message : String(error))
     ElMessage.error('进程 Dump 失败')
   } finally {
     actionLoading.value = false
@@ -335,12 +330,30 @@ function handleSearch() {
   currentPage.value = 1
 }
 
-function handleRefresh() {
+async function handleRefresh() {
   loading.value = true
-  setTimeout(() => {
-    loading.value = false
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetProcessList()
+    if (result && Array.isArray(result)) {
+      processes.value = result.map((p: any) => ({
+        pid: p.pid,
+        name: p.name || '',
+        path: p.path || '',
+        user: p.user || '',
+        cpu: p.cpu || 0,
+        memory: p.memory || 0,
+        ppid: p.ppid || 0,
+        risk_level: p.risk_level || 0
+      }))
+    }
     ElMessage.success('刷新成功')
-  }, 500)
+  } catch (error) {
+    console.error('Failed to load processes:', error)
+    ElMessage.error('刷新失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 function handlePageSizeChange(size: number) {

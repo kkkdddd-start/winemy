@@ -354,23 +354,38 @@ async function loadMonitorData() {
 
   loading.value = true
   try {
-    const cpuPercent = Math.random() * 30 + 20
-    const memPercent = Math.random() * 20 + 40
-
-    cpuUsage.value = Math.round(cpuPercent * 100) / 100
-    memoryUsage.value = Math.round(memPercent * 100) / 100
-    diskUsage.value = Math.round(Math.random() * 30 + 30 * 100) / 100
-
-    const netIn = Math.random() * 1024 * 1024
-    const netOut = Math.random() * 512 * 1024
-    networkSpeed.value = `${formatBytes(netIn + netOut)}/s`
-
-    cpuHistory.value.push(cpuUsage.value)
-    memoryHistory.value.push(memoryUsage.value)
-    diskReadHistory.value.push(Math.random() * 100 * 1024 * 1024)
-    diskWriteHistory.value.push(Math.random() * 50 * 1024 * 1024)
-    networkInHistory.value.push(netIn)
-    networkOutHistory.value.push(netOut)
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetMonitorData()
+    
+    if (result) {
+      if (result.cpu_usage !== undefined) {
+        cpuUsage.value = result.cpu_usage
+        cpuHistory.value.push(result.cpu_usage)
+      }
+      if (result.memory_usage) {
+        memoryUsage.value = result.memory_usage.used_percent
+        memoryHistory.value.push(result.memory_usage.used_percent)
+      }
+      if (result.disk_usage && Array.isArray(result.disk_usage)) {
+        const totalDisk = result.disk_usage.reduce((sum: number, d: any) => sum + (d.total || 0), 0)
+        const usedDisk = result.disk_usage.reduce((sum: number, d: any) => sum + (d.used || 0), 0)
+        diskUsage.value = totalDisk > 0 ? (usedDisk / totalDisk) * 100 : 0
+      }
+      if (result.network_status && Array.isArray(result.network_status) && result.network_status.length > 0) {
+        const netIn = result.network_status.reduce((sum: number, n: any) => sum + (n.bytes_recv || 0), 0)
+        const netOut = result.network_status.reduce((sum: number, n: any) => sum + (n.bytes_sent || 0), 0)
+        networkInHistory.value.push(netIn)
+        networkOutHistory.value.push(netOut)
+        networkSpeed.value = `${formatBytes(netIn + netOut)}/s`
+      }
+    } else {
+      const cpuPercent = Math.random() * 30 + 20
+      const memPercent = Math.random() * 20 + 40
+      cpuUsage.value = Math.round(cpuPercent * 100) / 100
+      memoryUsage.value = Math.round(memPercent * 100) / 100
+      cpuHistory.value.push(cpuUsage.value)
+      memoryHistory.value.push(memoryUsage.value)
+    }
 
     if (cpuHistory.value.length > 60) {
       cpuHistory.value.shift()
@@ -380,15 +395,6 @@ async function loadMonitorData() {
       networkInHistory.value.shift()
       networkOutHistory.value.shift()
     }
-
-    cpuCores.value = navigator.hardwareConcurrency || 4
-    memoryUsed.value = formatBytes(memPercent / 100 * 16 * 1024 * 1024 * 1024)
-    memoryTotal.value = '16 GB'
-
-    partitionData.value = [
-      { device: 'C:', mountpoint: 'C:\\', fstype: 'NTFS', total: 500 * 1024 * 1024 * 1024, used: 250 * 1024 * 1024 * 1024, free: 250 * 1024 * 1024 * 1024, used_percent: 50 },
-      { device: 'D:', mountpoint: 'D:\\', fstype: 'NTFS', total: 1 * 1024 * 1024 * 1024 * 1024, used: 600 * 1024 * 1024 * 1024, free: 400 * 1024 * 1024 * 1024, used_percent: 60 },
-    ]
 
     updateCharts()
   } catch (error) {

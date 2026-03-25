@@ -198,25 +198,19 @@ const activeTab = ref('connections')
 const detailDialogVisible = ref(false)
 const selectedConnection = ref<NetworkConnection | null>(null)
 
-const mockConnections = ref<NetworkConnection[]>([
-  { id: 1, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 50685, remote_addr: '142.250.185.4', remote_port: 443, state: 'ESTABLISHED', pid: 1024, process_name: 'chrome.exe', location: '美国', is_foreign: true, is_risk: false, risk_level: 1 },
-  { id: 2, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 443, remote_addr: '0.0.0.0', remote_port: 0, state: 'LISTENING', pid: 4, process_name: 'System', risk_level: 0 },
-  { id: 3, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 3389, remote_addr: '0.0.0.0', remote_port: 0, state: 'LISTENING', pid: 980, process_name: 'svchost.exe', risk_level: 2 },
-  { id: 4, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 49678, remote_addr: '192.168.1.1', remote_port: 445, state: 'ESTABLISHED', pid: 4, process_name: 'System', risk_level: 0 },
-  { id: 5, protocol: 'UDP', local_addr: '192.168.1.100', local_port: 53, remote_addr: '0.0.0.0', remote_port: 0, state: '-', pid: 1300, process_name: 'svchost.exe', risk_level: 0 },
-  { id: 6, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 49789, remote_addr: '23.105.185.42', remote_port: 4444, state: 'ESTABLISHED', pid: 5120, process_name: 'trojan.exe', location: '境外', is_foreign: true, is_risk: true, risk_level: 3 },
-  { id: 7, protocol: 'TCP', local_addr: '192.168.1.100', local_port: 49790, remote_addr: '10.0.0.1', remote_port: 5555, state: 'ESTABLISHED', pid: 6144, process_name: 'meterpreter.exe', location: '内网', is_risk: true, risk_level: 3 },
-])
+const mockConnections = ref<NetworkConnection[]>([])
 
 const connectionStats = computed(() => ({
-  total: mockConnections.value.length,
-  risk: mockConnections.value.filter(c => c.risk_level >= 2).length,
-  listening: mockConnections.value.filter(c => c.state === 'LISTENING').length,
-  foreign: mockConnections.value.filter(c => c.is_foreign).length
+  total: connections.value.length,
+  risk: connections.value.filter(c => c.risk_level >= 2).length,
+  listening: connections.value.filter(c => c.state === 'LISTENING').length,
+  foreign: connections.value.filter(c => c.is_foreign).length
 }))
 
+const connections = ref<NetworkConnection[]>([])
+
 const filteredConnections = computed(() => {
-  let result = mockConnections.value
+  let result = connections.value
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase()
     result = result.filter(c => 
@@ -236,7 +230,7 @@ const filteredConnections = computed(() => {
 })
 
 const listeningPorts = computed(() => {
-  return mockConnections.value
+  return connections.value
     .filter(c => c.state === 'LISTENING')
     .map(c => ({
       ...c,
@@ -276,12 +270,35 @@ function handleKillProcess() {
 
 function handleSearch() {}
 
-function handleRefresh() {
+async function handleRefresh() {
   loading.value = true
-  setTimeout(() => {
-    loading.value = false
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetNetworkList()
+    if (result && Array.isArray(result)) {
+      connections.value = result.map((c: any, index: number) => ({
+        id: index + 1,
+        protocol: c.protocol || '',
+        local_addr: c.local_addr || '',
+        local_port: c.local_port || 0,
+        remote_addr: c.remote_addr || '',
+        remote_port: c.remote_port || 0,
+        state: c.state || '',
+        pid: c.pid || 0,
+        process_name: c.process_name || '',
+        location: c.country || '',
+        is_foreign: c.is_foreign || false,
+        is_risk: c.risk_level >= 2,
+        risk_level: c.risk_level || 0
+      }))
+    }
     ElMessage.success('刷新成功')
-  }, 500)
+  } catch (error) {
+    console.error('Failed to load network connections:', error)
+    ElMessage.error('刷新失败')
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 

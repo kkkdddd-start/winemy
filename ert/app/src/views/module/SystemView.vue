@@ -252,25 +252,13 @@ function updateCharts() {
 async function loadSystemInfo() {
   loading.value = true
   try {
-    systemInfo.value = {
-      hostname: 'WIN-ERT-DEV',
-      os_name: 'Windows 11 专业版',
-      os_version: '23H2',
-      architecture: 'x64',
-      boot_time: new Date(Date.now() - 86400000 * 3).toISOString(),
-      current_user: 'Administrator',
-      cpu_count: 8,
-      memory_total: 16 * 1024 * 1024 * 1024,
-      disk_total: 500 * 1024 * 1024 * 1024,
-      is_domain: false,
-      uptime: '3天 12小时 30分钟'
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetSystemInfo()
+    if (result) {
+      systemInfo.value = result
     }
-
-    networkAdapters.value = [
-      { name: '以太网', ip_addresses: ['192.168.1.100', '192.168.1.101'], mac_address: '00:11:22:33:44:55', status: 'Up', connection_count: 15 },
-      { name: 'VMware Network Adapter', ip_addresses: ['192.168.56.1'], mac_address: '00:50:56:C0:00:01', status: 'Up', connection_count: 0 },
-      { name: 'Loopback Pseudo-Interface 1', ip_addresses: ['127.0.0.1'], mac_address: '-', status: 'Up', connection_count: 0 }
-    ]
+    
+    networkAdapters.value = []
   } catch (error) {
     console.error('Failed to load system info:', error)
   } finally {

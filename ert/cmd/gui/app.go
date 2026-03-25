@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/yourname/ert/internal/config"
 	"github.com/yourname/ert/internal/core/storage"
@@ -84,14 +85,319 @@ func (a *App) registerModules() {
 func (a *App) Run() {
 }
 
-func (a *App) GetSystemInfo(ctx context.Context) ([]map[string]interface{}, error) {
-	return a.reg.GetModuleData(ctx, 1, "")
+// GetModuleData retrieves data from a specific module
+// Wails binding for frontend API call
+func (a *App) GetModuleData(moduleID int, query string) ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), moduleID, query)
 }
 
-func (a *App) CollectModule(ctx context.Context, moduleID int) error {
-	return a.reg.CollectModule(ctx, moduleID)
+// CollectModule triggers data collection for a specific module
+// Wails binding for frontend API call
+func (a *App) CollectModule(moduleID int) error {
+	return a.reg.CollectModule(context.Background(), moduleID)
 }
 
-func (a *App) GetModuleData(ctx context.Context, moduleID int, query string) ([]map[string]interface{}, error) {
-	return a.reg.GetModuleData(ctx, moduleID, query)
+// GetSystemInfo retrieves system information
+// Wails binding for frontend API call
+func (a *App) GetSystemInfo() (map[string]interface{}, error) {
+	data, err := a.reg.GetModuleData(context.Background(), 1, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return data[0], nil
+}
+
+// GetProcessList retrieves process list
+// Wails binding for frontend API call
+func (a *App) GetProcessList() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 2, "")
+}
+
+// KillProcess kills a process by PID
+// Wails binding for frontend API call
+func (a *App) KillProcess(pid uint32) error {
+	module, err := a.reg.Get(2)
+	if err != nil {
+		return err
+	}
+	if procModule, ok := module.(*m2_process.ProcessModule); ok {
+		return procModule.KillProcess(pid)
+	}
+	return nil
+}
+
+// GetNetworkList retrieves network connections
+// Wails binding for frontend API call
+func (a *App) GetNetworkList() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 3, "")
+}
+
+// GetRegistryKeys retrieves registry keys
+// Wails binding for frontend API call
+func (a *App) GetRegistryKeys() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 4, "")
+}
+
+// GetServices retrieves services list
+// Wails binding for frontend API call
+func (a *App) GetServices() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 5, "")
+}
+
+// GetScheduledTasks retrieves scheduled tasks
+// Wails binding for frontend API call
+func (a *App) GetScheduledTasks() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 6, "")
+}
+
+// GetMonitorData retrieves real-time monitoring data
+// Wails binding for frontend API call
+func (a *App) GetMonitorData() (map[string]interface{}, error) {
+	data, err := a.reg.GetModuleData(context.Background(), 7, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return data[0], nil
+}
+
+// GetPatches retrieves installed patches
+// Wails binding for frontend API call
+func (a *App) GetPatches() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 8, "")
+}
+
+// GetSoftwareList retrieves installed software
+// Wails binding for frontend API call
+func (a *App) GetSoftwareList() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 9, "")
+}
+
+// GetDrivers retrieves kernel drivers
+// Wails binding for frontend API call
+func (a *App) GetDrivers() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 10, "")
+}
+
+// GetFiles retrieves file system entries
+// Wails binding for frontend API call
+func (a *App) GetFiles(path string) ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 11, path)
+}
+
+// GetActivity retrieves activity history
+// Wails binding for frontend API call
+func (a *App) GetActivity() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 12, "")
+}
+
+// GetEventLogs retrieves event logs
+// Wails binding for frontend API call
+func (a *App) GetEventLogs(channel string, level string, eventID int) ([]map[string]interface{}, error) {
+	query := channel + ":" + level + ":" + string(rune(eventID))
+	return a.reg.GetModuleData(context.Background(), 13, query)
+}
+
+// GetAccounts retrieves user accounts
+// Wails binding for frontend API call
+func (a *App) GetAccounts() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 14, "")
+}
+
+// GetMemoryDumps retrieves memory dump list
+// Wails binding for frontend API call
+func (a *App) GetMemoryDumps() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 15, "")
+}
+
+// DumpProcess creates a memory dump for a process
+// Wails binding for frontend API call
+func (a *App) DumpProcess(pid uint32) (string, error) {
+	module, err := a.reg.Get(15)
+	if err != nil {
+		return "", err
+	}
+	if memModule, ok := module.(*m15_memory.MemoryModule); ok {
+		return memModule.DumpProcess(pid)
+	}
+	return "", nil
+}
+
+// GetThreats retrieves threat detection results
+// Wails binding for frontend API call
+func (a *App) GetThreats() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 16, "")
+}
+
+// ResponseAction performs a response action
+// Wails binding for frontend API call
+func (a *App) ResponseAction(action string, target string) error {
+	module, err := a.reg.Get(17)
+	if err != nil {
+		return err
+	}
+	if respModule, ok := module.(*m17_response.ResponseModule); ok {
+		switch action {
+		case "kill_process":
+			pid := uint32(0)
+			fmt.Sscanf(target, "%d", &pid)
+			if pid != 0 {
+				return respModule.KillProcess(pid)
+			}
+		case "isolate_file":
+			return respModule.IsolateFile(target)
+		case "disconnect_network":
+			pid := uint32(0)
+			fmt.Sscanf(target, "%d", &pid)
+			if pid != 0 {
+				return respModule.DisconnectNetwork(pid)
+			}
+		case "disable_service":
+			return respModule.DisableService(target)
+		case "block_ip":
+			return respModule.BlockIP(target)
+		case "unblock_ip":
+			return respModule.UnblockIP(target)
+		}
+	}
+	return fmt.Errorf("unsupported action: %s", action)
+}
+
+// GetAutostartItems retrieves autostart items
+// Wails binding for frontend API call
+func (a *App) GetAutostartItems() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 18, "")
+}
+
+// GetDomainInfo retrieves domain information
+// Wails binding for frontend API call
+func (a *App) GetDomainInfo() (map[string]interface{}, error) {
+	data, err := a.reg.GetModuleData(context.Background(), 19, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return data[0], nil
+}
+
+// GetDomainHackDetections retrieves domain hack detections
+// Wails binding for frontend API call
+func (a *App) GetDomainHackDetections() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 20, "")
+}
+
+// GetWMICHistory retrieves WMIC command history
+// Wails binding for frontend API call
+func (a *App) GetWMICHistory() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 21, "")
+}
+
+// ExportReport exports a report
+// Wails binding for frontend API call
+func (a *App) ExportReport(format string, sessionID string) (string, error) {
+	module, err := a.reg.Get(22)
+	if err != nil {
+		return "", err
+	}
+	if reportModule, ok := module.(*m22_report.ReportModule); ok {
+		return reportModule.ExportReport(format, sessionID)
+	}
+	return "", nil
+}
+
+// GetReportHistory retrieves report generation history
+// Wails binding for frontend API call
+func (a *App) GetReportHistory() ([]map[string]interface{}, error) {
+	module, err := a.reg.Get(22)
+	if err != nil {
+		return nil, err
+	}
+	if reportModule, ok := module.(*m22_report.ReportModule); ok {
+		return reportModule.ListReports(), nil
+	}
+	return nil, nil
+}
+
+// GetBaselineResults retrieves security baseline check results
+// Wails binding for frontend API call
+func (a *App) GetBaselineResults() ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 23, "")
+}
+
+// GetIISLogs retrieves IIS logs
+// Wails binding for frontend API call
+func (a *App) GetIISLogs(logPath string) ([]map[string]interface{}, error) {
+	return a.reg.GetModuleData(context.Background(), 24, logPath)
+}
+
+// CodecEncode encodes a string using specified codec
+// Wails binding for frontend API call
+func (a *App) CodecEncode(input string, codecType string) (string, error) {
+	module, err := a.reg.Get(25)
+	if err != nil {
+		return "", err
+	}
+	if codecModule, ok := module.(*m25_codec.CodecModule); ok {
+		return codecModule.Encode(input, codecType)
+	}
+	return "", nil
+}
+
+// CodecDecode decodes a string using specified codec
+// Wails binding for frontend API call
+func (a *App) CodecDecode(input string, codecType string) (string, error) {
+	module, err := a.reg.Get(25)
+	if err != nil {
+		return "", err
+	}
+	if codecModule, ok := module.(*m25_codec.CodecModule); ok {
+		return codecModule.Decode(input, codecType)
+	}
+	return "", nil
+}
+
+// CodecAutoDetect auto-detects encoding type
+// Wails binding for frontend API call
+func (a *App) CodecAutoDetect(input string) ([]map[string]interface{}, error) {
+	module, err := a.reg.Get(25)
+	if err != nil {
+		return nil, err
+	}
+	if codecModule, ok := module.(*m25_codec.CodecModule); ok {
+		return codecModule.AutoDetect(input)
+	}
+	return nil, nil
+}
+
+// GetCodecHistory retrieves codec history
+// Wails binding for frontend API call
+func (a *App) GetCodecHistory() ([]map[string]interface{}, error) {
+	module, err := a.reg.Get(25)
+	if err != nil {
+		return nil, err
+	}
+	if codecModule, ok := module.(*m25_codec.CodecModule); ok {
+		return codecModule.GetHistory(), nil
+	}
+	return nil, nil
+}
+
+// ClearCodecHistory clears codec history
+// Wails binding for frontend API call
+func (a *App) ClearCodecHistory() error {
+	module, err := a.reg.Get(25)
+	if err != nil {
+		return err
+	}
+	if codecModule, ok := module.(*m25_codec.CodecModule); ok {
+		codecModule.ClearHistory()
+	}
+	return nil
 }

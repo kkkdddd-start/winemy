@@ -328,7 +328,7 @@ function handleCurrentChange() {}
 async function loadThreatList() {
   loading.value = true
   try {
-    const data = await Go.GetThreatList()
+    const data = await Go.GetThreats()
     if (data) {
       threatList.value = data as ThreatInfo[]
     }

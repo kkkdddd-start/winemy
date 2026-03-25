@@ -289,7 +289,7 @@ function getStatusRiskLevel(status: number): number {
 async function loadLogList() {
   loading.value = true
   try {
-    const data = await Go.GetIISLogList()
+    const data = await Go.GetIISLogs('')
     if (data) {
       logList.value = data as LogInfo[]
     }

@@ -198,25 +198,19 @@ const filterStatus = ref('')
 const detailDialogVisible = ref(false)
 const selectedTask = ref<ScheduledTask | null>(null)
 
-const mockTaskList = ref<ScheduledTask[]>([
-  { name: 'WindowsUpdate', path: '\\Microsoft\\Windows\\WindowsUpdate', state: 'Ready', last_run_time: '2024-03-20 03:00:00', next_run_time: '2024-03-21 03:00:00', command: 'wuauclt.exe /detectnow', trigger: '每日 03:00', risk_level: 0, description: 'Windows 自动更新检测' },
-  { name: 'OfficeAutomaticUpdates', path: '\\Microsoft\\Office\\OfficeAutomaticUpdates', state: 'Ready', last_run_time: '2024-03-19 08:00:00', next_run_time: '2024-03-20 08:00:00', trigger: '每日 08:00', risk_level: 0, description: 'Office 自动更新' },
-  { name: 'SuspiciousTask', path: '\\Microsoft\\Windows\\Temp', state: 'Ready', last_run_time: '2024-03-15 02:30:00', next_run_time: '2024-03-22 02:30:00', command: 'powershell -enc JABhAHIA...', trigger: '每日 02:30', risk_level: 3, description: '可疑的 PowerShell 任务 - 建议立即检查' },
-  { name: 'UserLogon', path: '\\Microsoft\\Windows\\Test', state: 'Running', last_run_time: '2024-03-21 09:15:00', next_run_time: '-', command: 'C:\\temp\\logon.bat', trigger: '用户登录时', risk_level: 2, description: '用户登录时执行 - 路径可疑' },
-  { name: 'SystemCleanup', path: '\\Microsoft\\Windows\\DiskCleanup', state: 'Ready', last_run_time: '2024-03-18 01:00:00', next_run_time: '2024-03-25 01:00:00', trigger: '每周一 01:00', risk_level: 0, description: '磁盘清理任务' },
-  { name: 'SecurityHealth', path: '\\Microsoft\\Windows\\SecurityHealth', state: 'Ready', last_run_time: '2024-03-20 10:00:00', next_run_time: '2024-03-21 10:00:00', trigger: '每日 10:00', risk_level: 0, description: '安全中心健康检查' },
-  { name: 'TempFilesCleanup', path: '\\Microsoft\\Windows\\Temp\\User_Files', state: 'Disabled', last_run_time: '2024-02-01 00:00:00', next_run_time: '-', trigger: '手动', risk_level: 1, description: '临时文件清理（已禁用）' },
-])
+const mockTaskList = ref<ScheduledTask[]>([])
 
 const taskStats = computed(() => ({
-  total: mockTaskList.value.length,
-  anomaly: mockTaskList.value.filter(t => t.risk_level >= 2).length,
-  running: mockTaskList.value.filter(t => t.state === 'Running').length,
-  disabled: mockTaskList.value.filter(t => t.state === 'Disabled').length
+  total: tasks.value.length,
+  anomaly: tasks.value.filter(t => t.risk_level >= 2).length,
+  running: tasks.value.filter(t => t.state === 'Running').length,
+  disabled: tasks.value.filter(t => t.state === 'Disabled').length
 }))
 
+const tasks = ref<ScheduledTask[]>([])
+
 const filteredTaskList = computed(() => {
-  let result = mockTaskList.value
+  let result = tasks.value
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase()
     result = result.filter(t =>
@@ -283,12 +277,31 @@ function handleFeature(feature: string) {
   ElMessage.info(`功能: ${feature}`)
 }
 
-function handleRefresh() {
+async function handleRefresh() {
   loading.value = true
-  setTimeout(() => {
-    loading.value = false
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetScheduledTasks()
+    if (result && Array.isArray(result)) {
+      tasks.value = result.map((t: any) => ({
+        name: t.name || '',
+        path: t.path || '',
+        state: t.state || 'Unknown',
+        last_run_time: t.last_run_time || '',
+        next_run_time: t.next_run_time || '',
+        command: t.command || '',
+        trigger: t.trigger || '',
+        risk_level: t.risk_level || 0,
+        description: t.description || ''
+      }))
+    }
     ElMessage.success('刷新成功')
-  }, 500)
+  } catch (error) {
+    console.error('Failed to load scheduled tasks:', error)
+    ElMessage.error('刷新失败')
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 

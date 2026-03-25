@@ -263,7 +263,7 @@ function updateStats() {
 async function loadBaselineList() {
   loading.value = true
   try {
-    const data = await Go.GetBaselineList()
+    const data = await Go.GetBaselineResults()
     if (data) {
       baselineList.value = data as BaselineItem[]
       updateStats()

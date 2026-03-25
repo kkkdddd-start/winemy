@@ -302,7 +302,7 @@ function handleCurrentChange() {}
 async function loadDriverList() {
   loading.value = true
   try {
-    const data = await Go.GetKernelDriverList()
+    const data = await Go.GetDrivers()
     if (data) {
       driverList.value = data as DriverInfo[]
     }

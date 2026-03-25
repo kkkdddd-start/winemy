@@ -259,7 +259,7 @@ function getRiskLevel(risk: string): number {
 async function loadResultList() {
   loading.value = true
   try {
-    const data = await Go.GetDomainHackList()
+    const data = await Go.GetDomainHackDetections()
     if (data) {
       resultList.value = data as HackResult[]
     }

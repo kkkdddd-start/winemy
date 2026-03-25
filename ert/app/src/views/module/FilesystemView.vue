@@ -312,7 +312,7 @@ function handleCurrentChange() {}
 async function loadFileList() {
   loading.value = true
   try {
-    const data = await Go.GetFileList()
+    const data = await Go.GetFiles('')
     if (data) {
       fileList.value = data as FileInfo[]
     }

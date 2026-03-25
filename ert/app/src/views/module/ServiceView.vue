@@ -197,26 +197,19 @@ const configDialogVisible = ref(false)
 const selectedService = ref<ServiceInfo | null>(null)
 const configForm = ref({ startType: 'Auto' })
 
-const mockServiceList = ref<ServiceInfo[]>([
-  { name: 'wuauserv', display_name: 'Windows Update', status: 'Running', start_type: 'Auto', path: 'C:\\Windows\\system32\\svchost.exe -k netsvcs', description: '启用此计算机的检测、下载和安装更新', risk_level: 0 },
-  { name: 'WdNisSvc', display_name: 'Microsoft Defender Network Inspection Service', status: 'Running', start_type: 'Auto', path: 'C:\\Program Files\\Windows Defender\\NisSrv.exe', description: '帮助抵御网络威胁', risk_level: 0 },
-  { name: 'WinDefend', display_name: 'Microsoft Defender Antivirus Service', status: 'Running', start_type: 'Auto', path: 'C:\\Program Files\\Windows Defender\\MsMpEng.exe', description: '帮助保护用户免受恶意软件威胁', risk_level: 0 },
-  { name: 'TelnetService', display_name: 'Telnet Service', status: 'Stopped', start_type: 'Disabled', path: 'C:\\Windows\\system32\\tlntsvr.exe', description: '提供Telnet服务', risk_level: 3 },
-  { name: 'FTPServer', display_name: 'FTP Server', status: 'Running', start_type: 'Auto', path: 'C:\\Program Files\\FTP\\ftpserver.exe', description: 'FTP 服务器', risk_level: 2 },
-  { name: 'SNMPService', display_name: 'SNMP Service', status: 'Running', start_type: 'Manual', path: 'C:\\Windows\\system32\\snmptrap.exe', description: 'SNMP 协议支持', risk_level: 2 },
-  { name: 'RemoteRegistry', display_name: 'Remote Registry', status: 'Running', start_type: 'Auto', path: 'C:\\Windows\\system32\\svchost.exe -k regsvc', description: '使远程用户能修改此计算机上的注册表', risk_level: 3 },
-  { name: 'Spooler', display_name: 'Print Spooler', status: 'Running', start_type: 'Auto', path: 'C:\\Windows\\System32\\spoolsv.exe', description: '将文件加载到内存以供打印', risk_level: 1 },
-])
+const mockServiceList = ref<ServiceInfo[]>([])
 
 const serviceStats = computed(() => ({
-  total: mockServiceList.value.length,
-  running: mockServiceList.value.filter(s => s.status === 'Running').length,
-  stopped: mockServiceList.value.filter(s => s.status !== 'Running').length,
-  risk: mockServiceList.value.filter(s => s.risk_level >= 2).length
+  total: services.value.length,
+  running: services.value.filter(s => s.status === 'Running').length,
+  stopped: services.value.filter(s => s.status !== 'Running').length,
+  risk: services.value.filter(s => s.risk_level >= 2).length
 }))
 
+const services = ref<ServiceInfo[]>([])
+
 const filteredServiceList = computed(() => {
-  let result = mockServiceList.value
+  let result = services.value
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase()
     result = result.filter(s =>
@@ -289,10 +282,26 @@ function handleFeature(feature: string) {
 
 function handleRefresh() {
   loading.value = true
-  setTimeout(() => {
-    loading.value = false
+  const { Go } = await import('@wailsjs/go/main/App')
+  Go.GetServices().then((result: any) => {
+    if (result && Array.isArray(result)) {
+      services.value = result.map((s: any) => ({
+        name: s.name || '',
+        display_name: s.display_name || '',
+        status: s.status || 'Unknown',
+        start_type: s.start_type || 'Unknown',
+        path: s.path || '',
+        description: s.description || '',
+        risk_level: s.risk_level || 0
+      }))
+    }
     ElMessage.success('刷新成功')
-  }, 500)
+  }).catch((error: any) => {
+    console.error('Failed to load services:', error)
+    ElMessage.error('刷新失败')
+  }).finally(() => {
+    loading.value = false
+  })
 }
 </script>
 

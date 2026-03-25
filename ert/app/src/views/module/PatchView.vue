@@ -267,7 +267,7 @@ function handleCurrentChange() {
 async function loadPatchList() {
   loading.value = true
   try {
-    const data = await Go.GetPatchList()
+    const data = await Go.GetPatches()
     if (data) {
       patchList.value = data as PatchInfo[]
     }
