@@ -282,3 +282,98 @@ func (m *KernelModule) GetData() ([]map[string]interface{}, error) {
 	}
 	return result, nil
 }
+
+func (m *KernelModule) GetDriverVersion(driverName string) (string, error) {
+	driverPath := getDriverPath(driverName)
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`(Get-Item '%s' -ErrorAction SilentlyContinue).VersionInfo | Select-Object -ExpandProperty FileVersion`, driverPath))
+	output, err := cmd.Output()
+	if err != nil {
+		cmd2 := exec.Command("powershell", "-Command",
+			fmt.Sprintf(`(Get-Item '%s' -ErrorAction SilentlyContinue).VersionInfo.ProductVersion`, driverPath))
+		output2, err2 := cmd2.Output()
+		if err2 != nil {
+			return "Unknown", fmt.Errorf("failed to get driver version")
+		}
+		return strings.TrimSpace(string(output2)), nil
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (m *KernelModule) GetDriverCompany(driverPath string) (string, error) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`(Get-Item '%s' -ErrorAction SilentlyContinue).VersionInfo | Select-Object -ExpandProperty CompanyName`, driverPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return "Unknown", fmt.Errorf("failed to get driver company")
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (m *KernelModule) DetectFilterDrivers() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("fltmc.exe")
+	output, err := cmd.Output()
+	if err != nil {
+		cmd2 := exec.Command("powershell", "-Command",
+			`$ErrorActionPreference='SilentlyContinue'
+$filterDrivers = @()
+$drivers = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\*' | Where-Object { $_.Type -eq '2' -and $_.Start -eq '0' }
+foreach($d in $drivers) {
+    $filterDrivers += @{
+        'Name' = $d.PSChildName
+        'DisplayName' = $d.DisplayName
+        'Path' = $d.ImagePath
+    }
+}
+$filterDrivers | ConvertTo-Json`)
+
+		output2, err2 := cmd2.Output()
+		if err2 != nil {
+			return nil, fmt.Errorf("fltmc.exe not available and alternative detection failed: %w", err)
+		}
+		if err := json.Unmarshal(output2, &results); err != nil {
+			var single map[string]interface{}
+			if err := json.Unmarshal(output2, &single); err == nil {
+				results = []map[string]interface{}{single}
+			}
+		}
+		return results, nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for i, line := range lines {
+		if i < 3 {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			results = append(results, map[string]interface{}{
+				"name":       fields[0],
+				"altitude":   fields[1],
+				"status":     fields[2],
+				"type":       "filter_driver",
+				"risk_level": model.RiskMedium,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *KernelModule) Search(keyword string) ([]model.DriverDTO, error) {
+	results := []model.DriverDTO{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, d := range m.drivers {
+		if strings.Contains(strings.ToLower(d.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(d.Path), keywordLower) ||
+			strings.Contains(strings.ToLower(d.Signature), keywordLower) {
+			results = append(results, d)
+		}
+	}
+
+	return results, nil
+}

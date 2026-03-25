@@ -158,6 +158,26 @@ func (m *ScheduleModule) Stop() error {
 	return nil
 }
 
+func (m *ScheduleModule) ExportTaskToXML(taskName, outputPath string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`schtasks /query /tn "%s" /xml | Out-File -FilePath "%s" -Encoding UTF8`, taskName, outputPath))
+	_, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to export task %s to XML: %w", taskName, err)
+	}
+	return nil
+}
+
+func (m *ScheduleModule) GetAllTasksXML() (string, error) {
+	cmd := exec.Command("powershell", "-Command",
+		`schtasks /query /fo XML /v`)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to query tasks as XML: %w", err)
+	}
+	return string(output), nil
+}
+
 func (m *ScheduleModule) GetData() ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0, len(m.tasks))
 	for _, t := range m.tasks {
@@ -169,9 +189,12 @@ func (m *ScheduleModule) GetData() ([]map[string]interface{}, error) {
 		if !t.NextRunTime.IsZero() {
 			nextRunStr = t.NextRunTime.Format(time.RFC3339)
 		}
+		cmdArgs := parseCommandArgs(t.Path)
 		result = append(result, map[string]interface{}{
 			"name":          t.Name,
 			"path":          t.Path,
+			"command":       cmdArgs.command,
+			"arguments":     cmdArgs.arguments,
 			"state":         t.State,
 			"last_run_time": lastRunStr,
 			"next_run_time": nextRunStr,
@@ -179,4 +202,52 @@ func (m *ScheduleModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
+}
+
+type commandParts struct {
+	command   string
+	arguments string
+}
+
+func parseCommandArgs(fullPath string) commandParts {
+	parts := strings.Fields(fullPath)
+	if len(parts) == 0 {
+		return commandParts{"", ""}
+	}
+	if len(parts) == 1 {
+		return commandParts{parts[0], ""}
+	}
+	return commandParts{parts[0], strings.Join(parts[1:], " ")}
+}
+
+func (m *ScheduleModule) Search(keyword string) []model.ScheduledTaskDTO {
+	results := []model.ScheduledTaskDTO{}
+	keywordLower := strings.ToLower(keyword)
+	for _, t := range m.tasks {
+		if strings.Contains(strings.ToLower(t.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(t.Path), keywordLower) {
+			results = append(results, t)
+		}
+	}
+	return results
+}
+
+func (m *ScheduleModule) DetectHiddenTasks() []model.ScheduledTaskDTO {
+	hidden := []model.ScheduledTaskDTO{}
+	cmd := exec.Command("powershell", "-Command",
+		`schtasks /query /fo CSV /v | Select-String -Pattern "Disabled"`)
+	output, err := cmd.Output()
+	if err != nil {
+		return hidden
+	}
+	disabledTasks := strings.Split(string(output), "\n")
+	for _, t := range m.tasks {
+		for _, dt := range disabledTasks {
+			if strings.Contains(dt, t.Name) && strings.Contains(strings.ToLower(t.State), "disabled") {
+				hidden = append(hidden, t)
+				break
+			}
+		}
+	}
+	return hidden
 }

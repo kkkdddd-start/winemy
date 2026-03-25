@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -286,4 +288,112 @@ func (m *MonitorModule) getMetricsData() []map[string]interface{} {
 			"status": "normal",
 		},
 	}
+}
+
+func (m *MonitorModule) GetCPUPerCore() ([]map[string]interface{}, error) {
+	perCPU, err := cpu.Percent(time.Second, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CPU per core: %w", err)
+	}
+
+	var results []map[string]interface{}
+	for i, percent := range perCPU {
+		results = append(results, map[string]interface{}{
+			"core":      i,
+			"usage":     percent,
+			"unit":      "percent",
+			"status":    getStatus(percent, 80),
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	}
+	return results, nil
+}
+
+func (m *MonitorModule) GetMemoryPageRate() (map[string]interface{}, error) {
+	cmd := exec.Command("powershell", "-Command",
+		`$perfCounters = Get-Counter '\Memory\Pages Input/sec','\Memory\Pages Output/sec' -ErrorAction SilentlyContinue
+if($perfCounters) {
+    $input = $perfCounters.CounterSamples | Where-Object { $_.Path -like '*Pages Input*' } | Select-Object -ExpandProperty CookedValue
+    $output = $perfCounters.CounterSamples | Where-Object { $_.Path -like '*Pages Output*' } | Select-Object -ExpandProperty CookedValue
+    Write-Output "$input|$output"
+} else {
+    Write-Output "0|0"
+}`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return map[string]interface{}{
+			"pages_input_per_sec":  0,
+			"pages_output_per_sec": 0,
+			"timestamp":            time.Now().Format(time.RFC3339),
+		}, nil
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(output)), "|")
+	pageIn := uint64(0)
+	pageOut := uint64(0)
+	if len(parts) >= 2 {
+		fmt.Sscanf(parts[0], "%d", &pageIn)
+		fmt.Sscanf(parts[1], "%d", &pageOut)
+	}
+
+	return map[string]interface{}{
+		"pages_input_per_sec":  pageIn,
+		"pages_output_per_sec": pageOut,
+		"timestamp":            time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+func (m *MonitorModule) GetDiskIOStats() (map[string]interface{}, error) {
+	ioCounters, err := disk.IOCounters()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get disk IO stats: %w", err)
+	}
+
+	var results []map[string]interface{}
+	for name, io := range ioCounters {
+		results = append(results, map[string]interface{}{
+			"disk_name":     name,
+			"read_count":    io.ReadCount,
+			"write_count":   io.WriteCount,
+			"read_bytes":    io.ReadBytes,
+			"write_bytes":   io.WriteBytes,
+			"read_time_ms":  io.ReadTime,
+			"write_time_ms": io.WriteTime,
+			"timestamp":     time.Now().Format(time.RFC3339),
+		})
+	}
+
+	stats := map[string]interface{}{
+		"disks":      results,
+		"disk_count": len(results),
+	}
+	return stats, nil
+}
+
+func (m *MonitorModule) GetPartitionStats() ([]map[string]interface{}, error) {
+	parts, err := disk.Partitions(false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get partitions: %w", err)
+	}
+
+	var results []map[string]interface{}
+	for _, p := range parts {
+		usage, err := disk.Usage(p.Mountpoint)
+		if err != nil {
+			continue
+		}
+
+		results = append(results, map[string]interface{}{
+			"device":       p.Device,
+			"mountpoint":   p.Mountpoint,
+			"fstype":       p.Fstype,
+			"total":        usage.Total,
+			"used":         usage.Used,
+			"free":         usage.Free,
+			"used_percent": usage.UsedPercent,
+			"timestamp":    time.Now().Format(time.RFC3339),
+		})
+	}
+	return results, nil
 }

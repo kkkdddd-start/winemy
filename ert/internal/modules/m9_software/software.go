@@ -4,7 +4,10 @@ package m9_software
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -175,4 +178,63 @@ func (m *SoftwareModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
+}
+
+func (m *SoftwareModule) Search(keyword string) ([]SoftwareDTO, error) {
+	results := []SoftwareDTO{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, s := range m.software {
+		if strings.Contains(strings.ToLower(s.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(s.Version), keywordLower) ||
+			strings.Contains(strings.ToLower(s.Vendor), keywordLower) {
+			results = append(results, s)
+		}
+	}
+
+	return results, nil
+}
+
+func (m *SoftwareModule) ExportJSON(filePath string) error {
+	data := map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"count":     len(m.software),
+		"software":  m.software,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
+}
+
+func (m *SoftwareModule) ExportCSV(filePath string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	writer.Write([]string{"Name", "Version", "Vendor", "Installed", "RiskLevel"})
+
+	for _, s := range m.software {
+		installedStr := ""
+		if !s.Installed.IsZero() {
+			installedStr = s.Installed.Format("2006-01-02")
+		}
+		writer.Write([]string{
+			s.Name,
+			s.Version,
+			s.Vendor,
+			installedStr,
+			fmt.Sprintf("%v", s.RiskLevel),
+		})
+	}
+
+	return nil
 }

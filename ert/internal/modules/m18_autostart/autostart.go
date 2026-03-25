@@ -4,6 +4,7 @@ package m18_autostart
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -368,4 +369,189 @@ func (m *AutostartModule) GetStartupFiles() []model.RegistryKeyDTO {
 
 func (m *AutostartModule) GetScheduledTasks() []model.ScheduledTaskDTO {
 	return m.scheduledTasks
+}
+
+func (m *AutostartModule) CollectIEBHO() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$paths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects'
+)
+
+foreach($path in $paths) {
+    if(Test-Path $path) {
+        $items = Get-ChildItem $path -ErrorAction SilentlyContinue
+        foreach($item in $items) {
+            $name = $item.GetValue('')
+            $clsid = $item.PSChildName
+            $desc = $item.GetValue('(Default)')
+            if(-not $name) { $name = $clsid }
+            Write-Output ("BHO:$name|$clsid|$desc")
+        }
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to collect IE BHO: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "BHO:") {
+			parts := strings.Split(strings.TrimPrefix(line, "BHO:"), "|")
+			if len(parts) >= 2 {
+				results = append(results, map[string]interface{}{
+					"name":       parts[0],
+					"clsid":      parts[1],
+					"type":       "ie_bho",
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$addons = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\SharePoint Extensions\*' -ErrorAction SilentlyContinue | Where-Object { $_.Type -eq 'SharePoint.BrowserAccess' }
+foreach($a in $addons) {
+    Write-Output ("SharePoint:" + $a.PSChildName)
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines2 := strings.Split(string(output2), "\n")
+		for _, line := range lines2 {
+			if strings.HasPrefix(line, "SharePoint:") {
+				results = append(results, map[string]interface{}{
+					"name":       strings.TrimPrefix(line, "SharePoint:"),
+					"type":       "sharepoint_addin",
+					"risk_level": model.RiskLow,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *AutostartModule) DetectShortcutHijacking() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	shortcutPaths := []string{
+		`C:\ProgramData\Microsoft\Windows\Start Menu\Programs`,
+		`C:\Users\Default\Microsoft\Windows\Start Menu\Programs`,
+		os.Getenv("APPDATA") + `\\Microsoft\\Windows\\Start Menu\\Programs`,
+	}
+
+	homeDir := os.Getenv("USERPROFILE")
+	if homeDir != "" {
+		shortcutPaths = append(shortcutPaths, filepath.Join(homeDir, "Desktop"))
+		shortcutPaths = append(shortcutPaths, filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs"))
+	}
+
+	for _, path := range shortcutPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		}
+
+		filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+
+			if strings.ToLower(filepath.Ext(filePath)) == ".lnk" {
+				cmd := exec.Command("powershell", "-Command",
+					fmt.Sprintf(`$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%s'); $target = $shortcut.TargetPath; $args = $shortcut.Arguments; if($target -and ($target -match 'temp|tmp|download|appdata')) {{ Write-Output 'Suspicious' }} elseif($args -and ($args -match 'temp|tmp|download')) {{ Write-Output 'SuspiciousArgs' }}`, filePath))
+				output, err := cmd.Output()
+				if err == nil {
+					result := strings.TrimSpace(string(output))
+					if result != "" {
+						results = append(results, map[string]interface{}{
+							"shortcut_path": filePath,
+							"type":          "shortcut_hijacking",
+							"indicator":     result,
+							"risk_level":    model.RiskHigh,
+						})
+					}
+				}
+
+				cmd2 := exec.Command("powershell", "-Command",
+					fmt.Sprintf(`$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%s'); Write-Output $shortcut.TargetPath`, filePath))
+				targetOutput, _ := cmd2.Output()
+				targetPath := strings.TrimSpace(string(targetOutput))
+
+				if targetPath != "" {
+					if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+						results = append(results, map[string]interface{}{
+							"shortcut_path": filePath,
+							"target_path":   targetPath,
+							"type":          "broken_shortcut",
+							"risk_level":    model.RiskMedium,
+						})
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	return results, nil
+}
+
+func (m *AutostartModule) Search(keyword string) ([]map[string]interface{}, error) {
+	results := []map[string]interface{}{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, r := range m.regKeys {
+		if strings.Contains(strings.ToLower(r.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(r.Value), keywordLower) ||
+			strings.Contains(strings.ToLower(r.Path), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":  "registry",
+				"name":  r.Name,
+				"value": r.Value,
+				"path":  r.Path,
+			})
+		}
+	}
+
+	for _, s := range m.startupFiles {
+		if strings.Contains(strings.ToLower(s.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(s.Value), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type": "startup_file",
+				"name": s.Name,
+				"path": s.Value,
+			})
+		}
+	}
+
+	for _, t := range m.scheduledTasks {
+		if strings.Contains(strings.ToLower(t.Name), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type": "scheduled_task",
+				"name": t.Name,
+				"path": t.Path,
+			})
+		}
+	}
+
+	for _, svc := range m.services {
+		if strings.Contains(strings.ToLower(svc.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(svc.DisplayName), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type": "service",
+				"name": svc.Name,
+				"path": svc.Path,
+			})
+		}
+	}
+
+	return results, nil
 }

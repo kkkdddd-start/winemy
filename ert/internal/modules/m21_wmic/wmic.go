@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -248,4 +249,229 @@ func (m *WmiModule) GetCommandHistory() []map[string]interface{} {
 
 func (m *WmiModule) GetSuspiciousCommands() []map[string]interface{} {
 	return m.suspiciousCmds
+}
+
+func (m *WmiModule) DetectFileDelete() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Security';ID=4657} -MaxEvents 100 -ErrorAction SilentlyContinue | Where-Object {
+    $_.Message -match 'Delete' -and $_.Message -match '\.log$|\.txt$|\.dat$|\.bak$'
+} | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $objectName = ($eventData | Where-Object { $_.Name -eq 'ObjectName' }).'#text'
+    $processName = ($eventData | Where-Object { $_.Name -eq 'ProcessName' }).'#text'
+    $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+    Write-Output ("$objectName|$processName|$time|DeleteOperation")
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 4 {
+				results = append(results, map[string]interface{}{
+					"file_path":  parts[0],
+					"process":    parts[1],
+					"timestamp":  parts[2],
+					"operation":  parts[3],
+					"type":       "file_delete",
+					"risk_level": model.RiskHigh,
+				})
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';ID=1} -MaxEvents 100 -ErrorAction SilentlyContinue | Where-Object {
+    $_.Message -match 'del\s+|Remove-Item|rm\s+|rmdir'
+} | ForEach-Object {
+    $commandLine = ($_.Message -split 'CommandLine:')[1] | Select-Object -First 1
+    $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+    Write-Output ("$commandLine|$time|SuspiciousDelete")
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines2 := strings.Split(string(output2), "\n")
+		for _, line := range lines2 {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "CommandLine:") {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 2 {
+				results = append(results, map[string]interface{}{
+					"command":    parts[0],
+					"timestamp":  parts[1],
+					"type":       "suspicious_delete",
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *WmiModule) DetectFormat() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Security';ID=4688} -MaxEvents 100 -ErrorAction SilentlyContinue | Where-Object {
+    $_.Message -match 'format\.exe|format\.com'
+} | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $processName = ($eventData | Where-Object { $_.Name -eq 'ProcessName' }).'#text'
+    $commandLine = ($eventData | Where-Object { $_.Name -eq 'CommandLine' }).'#text'
+    $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+    Write-Output ("$processName|$commandLine|$time|FormatDetected")
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 4 {
+				results = append(results, map[string]interface{}{
+					"process":    parts[0],
+					"command":    parts[1],
+					"timestamp":  parts[2],
+					"type":       "format_detected",
+					"risk_level": model.RiskCritical,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *WmiModule) DetectServiceStop() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='System';ID=7036} -MaxEvents 100 -ErrorAction SilentlyContinue | ForEach-Object {
+    if($_.Message -match 'stopped|Stopped') {
+        $serviceName = $_.Message -match 'The\s+(\w+)\s+service'
+        $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+        Write-Output ("ServiceStop|$serviceName|$time")
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 3 {
+				results = append(results, map[string]interface{}{
+					"service":    parts[1],
+					"timestamp":  parts[2],
+					"type":       "service_stop",
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *WmiModule) BuildTimeline() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	for _, entry := range m.commandHistory {
+		timestamp, ok := entry["timestamp"].(string)
+		if !ok {
+			timestamp = time.Now().Format(time.RFC3339)
+		}
+
+		results = append(results, map[string]interface{}{
+			"timestamp": timestamp,
+			"type":      entry["type"],
+			"source":    entry["source"],
+			"command":   entry["command"],
+			"category":  "wmic_history",
+		})
+	}
+
+	for _, entry := range m.suspiciousCmds {
+		timestamp, ok := entry["detected_at"].(string)
+		if !ok {
+			timestamp = time.Now().Format(time.RFC3339)
+		}
+
+		results = append(results, map[string]interface{}{
+			"timestamp":  timestamp,
+			"type":       "suspicious_command",
+			"command":    entry["command"],
+			"pattern":    entry["pattern"],
+			"category":   "detection",
+			"risk_level": entry["risk_level"],
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		t1, _ := time.Parse(time.RFC3339, results[i]["timestamp"].(string))
+		t2, _ := time.Parse(time.RFC3339, results[j]["timestamp"].(string))
+		return t1.Before(t2)
+	})
+
+	return results, nil
+}
+
+func (m *WmiModule) Search(keyword string) ([]map[string]interface{}, error) {
+	results := []map[string]interface{}{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, entry := range m.commandHistory {
+		cmd, ok := entry["command"].(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(strings.ToLower(cmd), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":    entry["type"],
+				"command": cmd,
+				"source":  entry["source"],
+			})
+		}
+	}
+
+	for _, entry := range m.suspiciousCmds {
+		cmd, ok := entry["command"].(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(strings.ToLower(cmd), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":    "suspicious_command",
+				"command": cmd,
+				"pattern": entry["pattern"],
+			})
+		}
+	}
+
+	return results, nil
 }

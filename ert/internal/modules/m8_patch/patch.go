@@ -272,3 +272,204 @@ func (m *PatchModule) Search(keyword string) []HotfixDTO {
 	}
 	return results
 }
+
+func (m *PatchModule) GetCVEInfo(kbID string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$searcher = New-Object -ComObject Microsoft.Update.Searcher
+$kb = '%s' -replace 'KB', ''
+$updates = $searcher.Search("UpdateID like '%%%s%%'").Updates
+foreach($update in $updates) {
+    $cves = @()
+    foreach($article in $update.KBArticleIDs) {
+        $cves += "KB$article"
+    }
+    if($cves.Count -eq 0) { $cves = @("N/A") }
+    Write-Output ($update.Title + "|" + $cves[0])
+}`, kbID, kbID))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return []map[string]interface{}{
+			{
+				"kb_id":       kbID,
+				"title":       "Unknown",
+				"cve_ids":     []string{},
+				"description": "Unable to retrieve CVE information",
+			},
+		}, nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 2 {
+			results = append(results, map[string]interface{}{
+				"kb_id":       kbID,
+				"title":       parts[0],
+				"cve_ids":     strings.Split(parts[1], ","),
+				"description": parts[0],
+			})
+		}
+	}
+
+	if len(results) == 0 {
+		results = append(results, map[string]interface{}{
+			"kb_id":       kbID,
+			"title":       "Not Found",
+			"cve_ids":     []string{},
+			"description": "KB update not found in Microsoft Update Catalog",
+		})
+	}
+	return results, nil
+}
+
+func (m *PatchModule) GetPatchSource(kbID string) (string, error) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$session = New-Object -ComObject Microsoft.Update.Session
+$searcher = $session.CreateUpdateSearcher()
+$kb = '%s' -replace 'KB', ''
+try {
+    $updates = $searcher.Search("UpdateID like '%$kb%'").Updates
+    foreach($update in $updates) {
+        if($update.KBArticleIDs -contains $kb -or $update.Title -like "*$kb*") {
+            Write-Output $update.SupportUrl
+            break
+        }
+    }
+} catch { }
+if(-not $updates) {
+    Write-Output "https://catalog.update.microsoft.com/"
+}`, kbID))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "https://catalog.update.microsoft.com/", nil
+	}
+	result := strings.TrimSpace(string(output))
+	if result == "" {
+		return "https://catalog.update.microsoft.com/", nil
+	}
+	return result, nil
+}
+
+func (m *PatchModule) GetPatchSize(kbID string) (map[string]interface{}, error) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$session = New-Object -ComObject Microsoft.Update.Session
+$searcher = $session.CreateUpdateSearcher()
+$kb = '%s' -replace 'KB', ''
+try {
+    $updates = $searcher.Search("UpdateID like '%$kb%'").Updates
+    foreach($update in $updates) {
+        if($update.KBArticleIDs -contains $kb -or $update.Title -like "*$kb*") {
+            $sizeKB = [math]::Round($update.MaxDownloadSize / 1024, 2)
+            $sizeMB = [math]::Round($update.MaxDownloadSize / 1024 / 1024, 2)
+            Write-Output "$sizeKB|$sizeMB"
+            break
+        }
+    }
+} catch { }
+if(-not $updates) {
+    Write-Output "0|0"
+}`, kbID))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return map[string]interface{}{
+			"kb_id":     kbID,
+			"size_kb":   0,
+			"size_mb":   0,
+			"size_byte": 0,
+		}, nil
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(output)), "|")
+	sizeKB := float64(0)
+	sizeMB := float64(0)
+	if len(parts) >= 2 {
+		fmt.Sscanf(parts[0], "%f", &sizeKB)
+		fmt.Sscanf(parts[1], "%f", &sizeMB)
+	}
+
+	return map[string]interface{}{
+		"kb_id":     kbID,
+		"size_kb":   sizeKB,
+		"size_mb":   sizeMB,
+		"size_byte": int64(sizeMB * 1024 * 1024),
+	}, nil
+}
+
+func (m *PatchModule) DetectRollback() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security' -Name File | Select-Object -ExpandProperty File`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		eventLogPath := strings.TrimSpace(string(output))
+		if eventLogPath != "" {
+			cmd2 := exec.Command("powershell", "-Command",
+				fmt.Sprintf(`wevtutil qe Security /c:50 /f:text /rd:true | Select-String -Pattern "Rollback|1202"`, eventLogPath))
+			output2, err2 := cmd2.Output()
+			if err2 == nil {
+				lines := strings.Split(string(output2), "\n")
+				for _, line := range lines {
+					if strings.Contains(strings.ToLower(line), "rollback") || strings.Contains(line, "1202") {
+						results = append(results, map[string]interface{}{
+							"event":      strings.TrimSpace(line),
+							"type":       "rollback_detected",
+							"risk_level": model.RiskHigh,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	cmd3 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$hotfixes = Get-HotFix | Where-Object { $_.Description -eq 'Hotfix' -or $_.Description -eq 'Update' }
+foreach($hf in $hotfixes) {
+    $installedOn = $hf.InstalledOn
+    if($installedOn -and ($installedOn -gt (Get-Date).AddDays(-7))) {
+        Write-Output ("Recent:" + $hf.HotFixID + ":" + $installedOn.ToString('yyyy-MM-dd'))
+    }
+}`)
+
+	output3, err := cmd3.Output()
+	if err == nil {
+		lines := strings.Split(string(output3), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "Recent:") {
+				parts := strings.Split(strings.TrimPrefix(line, "Recent:"), ":")
+				if len(parts) >= 3 {
+					results = append(results, map[string]interface{}{
+						"hotfix_id":  parts[1],
+						"type":       "recent_update",
+						"installed":  parts[2],
+						"risk_level": model.RiskMedium,
+					})
+				}
+			}
+		}
+	}
+
+	if len(results) == 0 {
+		results = append(results, map[string]interface{}{
+			"type":       "no_rollback_detected",
+			"risk_level": model.RiskLow,
+		})
+	}
+
+	return results, nil
+}

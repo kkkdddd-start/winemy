@@ -306,3 +306,72 @@ type CollectError struct {
 func (e *CollectError) Error() string {
 	return e.Message
 }
+
+func (m *SystemModule) GetNetworkConnectionCount() (map[string]interface{}, error) {
+	ioCounters, err := net.IOCounters(true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network connection count: %w", err)
+	}
+
+	var totalBytesRecv, totalBytesSent uint64
+	var totalPacketsRecv, totalPacketsSent uint64
+	var totalErrIn, totalErrOut uint64
+	var totalDropIn, totalDropOut uint64
+
+	interfaceStats := []map[string]interface{}{}
+
+	for _, iface := range ioCounters {
+		totalBytesRecv += iface.BytesRecv
+		totalBytesSent += iface.BytesSent
+		totalPacketsRecv += iface.PacketsRecv
+		totalPacketsSent += iface.PacketsSent
+		totalErrIn += iface.Errin
+		totalErrOut += iface.Errout
+		totalDropIn += iface.Dropin
+		totalDropOut += iface.Dropout
+
+		interfaceStats = append(interfaceStats, map[string]interface{}{
+			"name":         iface.Name,
+			"bytes_recv":   iface.BytesRecv,
+			"bytes_sent":   iface.BytesSent,
+			"packets_recv": iface.PacketsRecv,
+			"packets_sent": iface.PacketsSent,
+			"err_in":       iface.Errin,
+			"err_out":      iface.Errout,
+			"drop_in":      iface.Dropin,
+			"drop_out":     iface.Dropout,
+		})
+	}
+
+	return map[string]interface{}{
+		"total_bytes_recv":   totalBytesRecv,
+		"total_bytes_sent":   totalBytesSent,
+		"total_packets_recv": totalPacketsRecv,
+		"total_packets_sent": totalPacketsSent,
+		"total_err_in":       totalErrIn,
+		"total_err_out":      totalErrOut,
+		"total_drop_in":      totalDropIn,
+		"total_drop_out":     totalDropOut,
+		"interface_count":    len(ioCounters),
+		"interfaces":         interfaceStats,
+		"timestamp":          time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+func (m *SystemModule) GetRealtimeHistory() ([]map[string]interface{}, error) {
+	var history []map[string]interface{}
+
+	if m.metrics == nil {
+		return nil, fmt.Errorf("metrics not collected yet")
+	}
+
+	history = append(history, map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"cpu_usage": m.metrics.CPUUsage,
+		"memory":    m.metrics.MemoryUsage,
+		"disk":      m.metrics.DiskUsage,
+		"network":   m.metrics.NetworkStatus,
+	})
+
+	return history, nil
+}

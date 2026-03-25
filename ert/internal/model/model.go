@@ -148,6 +148,7 @@ type FileDTO struct {
 	SHA256    string    `json:"sha256"`
 	Modified  time.Time `json:"modified"`
 	Created   time.Time `json:"created"`
+	Accessed  time.Time `json:"accessed"`
 	IsLarge   bool      `json:"is_large"`
 	IsHidden  bool      `json:"is_hidden"`
 	IsSystem  bool      `json:"is_system"`
@@ -158,13 +159,18 @@ type FileDTO struct {
 }
 
 type AccountDTO struct {
-	Name      string    `json:"name"`
-	FullName  string    `json:"full_name"`
-	SID       string    `json:"sid"`
-	Domain    string    `json:"domain"`
-	Status    string    `json:"status"`
-	LastLogon time.Time `json:"last_logon"`
-	RiskLevel RiskLevel `json:"risk_level"`
+	Name                 string    `json:"name"`
+	FullName             string    `json:"full_name"`
+	SID                  string    `json:"sid"`
+	Domain               string    `json:"domain"`
+	Status               string    `json:"status"`
+	LastLogon            time.Time `json:"last_logon"`
+	PasswordExpired      bool      `json:"password_expired"`
+	PasswordNeverExpires bool      `json:"password_never_expires"`
+	HasPassword          bool      `json:"has_password"`
+	IsDisabled           bool      `json:"is_disabled"`
+	IsGuest              bool      `json:"is_guest"`
+	RiskLevel            RiskLevel `json:"risk_level"`
 }
 
 type DriverDTO struct {

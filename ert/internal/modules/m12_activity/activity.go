@@ -4,6 +4,7 @@ package m12_activity
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,10 +28,12 @@ type ActivityModule struct {
 }
 
 type RecentFileDTO struct {
-	Path      string          `json:"path"`
-	Name      string          `json:"name"`
-	Accessed  time.Time       `json:"accessed"`
-	RiskLevel model.RiskLevel `json:"risk_level"`
+	Path       string          `json:"path"`
+	Name       string          `json:"name"`
+	TargetPath string          `json:"target_path"`
+	Accessed   time.Time       `json:"accessed"`
+	Created    time.Time       `json:"created"`
+	RiskLevel  model.RiskLevel `json:"risk_level"`
 }
 
 type USBDeviceDTO struct {
@@ -100,25 +103,54 @@ func (m *ActivityModule) collectRecentFiles() {
 		}
 
 		name := entry.Name()
-		if strings.HasSuffix(strings.ToLower(name), ".lnk") {
+		recentFullPath := filepath.Join(recentPath, entry.Name())
+
+		isLnk := strings.HasSuffix(strings.ToLower(name), ".lnk")
+		targetPath := ""
+		if isLnk {
+			targetPath = m.parseLnkShortcut(recentFullPath)
 			name = name[:len(name)-4]
 		}
 
-		recentFullPath := filepath.Join(recentPath, entry.Name())
-
 		riskLevel := model.RiskLow
-		if isSuspiciousPath(recentFullPath) {
+		if isSuspiciousPath(recentFullPath) || (targetPath != "" && isSuspiciousPath(targetPath)) {
 			riskLevel = model.RiskHigh
 		}
 
 		m.recent = append(m.recent, RecentFileDTO{
-			Path:      recentFullPath,
-			Name:      name,
-			Accessed:  info.ModTime(),
-			RiskLevel: riskLevel,
+			Path:       recentFullPath,
+			Name:       name,
+			TargetPath: targetPath,
+			Accessed:   info.ModTime(),
+			Created:    m.getLnkCreationTime(recentFullPath),
+			RiskLevel:  riskLevel,
 		})
 		count++
 	}
+}
+
+func (m *ActivityModule) parseLnkShortcut(lnkPath string) string {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%s'); Write-Output $shortcut.TargetPath`, lnkPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func (m *ActivityModule) getLnkCreationTime(lnkPath string) time.Time {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`(Get-Item '%s' -Force -ErrorAction SilentlyContinue).CreationTime.ToString("yyyy-MM-ddTHH:mm:ssZ")`, lnkPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return time.Now()
+	}
+	t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimSpace(string(output)))
+	if err != nil {
+		return time.Now()
+	}
+	return t
 }
 
 func (m *ActivityModule) collectUSBDevices() {
@@ -487,4 +519,277 @@ func (m *ActivityModule) GetData() ([]map[string]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+func (m *ActivityModule) CollectRDPHistory() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name '*' | ForEach-Object {
+    $server = $_.Default
+    if($server) {
+        Write-Output "Server:$server"
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "Server:") {
+				results = append(results, map[string]interface{}{
+					"type":       "rdp_history",
+					"server":     strings.TrimPrefix(line, "Server:"),
+					"risk_level": model.RiskLow,
+				})
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$rdpFiles = Get-ChildItem -Path "$env:USERPROFILE\Documents" -Filter "*.rdp" -ErrorAction SilentlyContinue
+foreach($f in $rdpFiles) {
+    Write-Output ("RDPFile:" + $f.FullName)
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines := strings.Split(string(output2), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "RDPFile:") {
+				results = append(results, map[string]interface{}{
+					"type":       "rdp_file",
+					"path":       strings.TrimPrefix(line, "RDPFile:"),
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	cmd3 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+wevtutil qe Security /c:20 /f:text /rd:true | Select-String -Pattern "4624.*LogonType.*10" | Select-Object -First 10`)
+
+	output3, err := cmd3.Output()
+	if err == nil {
+		lines := strings.Split(string(output3), "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				results = append(results, map[string]interface{}{
+					"type":       "rdp_login",
+					"event":      strings.TrimSpace(line),
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ActivityModule) CollectShareHistory() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("net", "share")
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "Share name") && !strings.HasPrefix(line, "-") {
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					results = append(results, map[string]interface{}{
+						"type":       "share",
+						"name":       fields[0],
+						"path":       fields[2],
+						"risk_level": model.RiskLow,
+					})
+				}
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Network\Lanman\*' | ForEach-Object {
+    if($_.Pipe) {
+        Write-Output ("NamedPipe:" + $_.Pipe)
+    }
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines := strings.Split(string(output2), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "NamedPipe:") {
+				results = append(results, map[string]interface{}{
+					"type":       "named_pipe",
+					"pipe":       strings.TrimPrefix(line, "NamedPipe:"),
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ActivityModule) CollectPrintHistory() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMru' | Select-Object -ExpandProperty MRUList | ForEach-Object {
+    $value = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMru' -Name $_ -ErrorAction SilentlyContinue
+    if($value.$_ -match 'print| spool') {
+        Write-Output ("PrintCommand:" + $value.$_)
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "PrintCommand:") {
+				results = append(results, map[string]interface{}{
+					"type":       "print_command",
+					"command":    strings.TrimPrefix(line, "PrintCommand:"),
+					"risk_level": model.RiskLow,
+				})
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -LogName 'Microsoft-Windows-PrintService/Operational' -MaxEvents 50 -ErrorAction SilentlyContinue | ForEach-Object {
+    if($_.Message -match 'document|printed') {
+        Write-Output ("PrintEvent:" + $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + "|" + $_.Message.Substring(0, [Math]::Min(100, $_.Message.Length)))
+    }
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines := strings.Split(string(output2), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "PrintEvent:") {
+				parts := strings.Split(strings.TrimPrefix(line, "PrintEvent:"), "|")
+				if len(parts) >= 2 {
+					results = append(results, map[string]interface{}{
+						"type":       "print_event",
+						"timestamp":  parts[0],
+						"message":    parts[1],
+						"risk_level": model.RiskLow,
+					})
+				}
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ActivityModule) Search(keyword string) ([]map[string]interface{}, error) {
+	results := []map[string]interface{}{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, r := range m.recent {
+		if strings.Contains(strings.ToLower(r.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(r.Path), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":   "recent_file",
+				"name":   r.Name,
+				"path":   r.Path,
+				"source": "recent",
+			})
+		}
+	}
+
+	for _, u := range m.usb {
+		if strings.Contains(strings.ToLower(u.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(u.DeviceID), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":   "usb_device",
+				"name":   u.Name,
+				"source": "usb",
+			})
+		}
+	}
+
+	for _, b := range m.browser {
+		if strings.Contains(strings.ToLower(b.URL), keywordLower) ||
+			strings.Contains(strings.ToLower(b.Title), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":   "browser_history",
+				"url":    b.URL,
+				"title":  b.Title,
+				"source": "browser",
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ActivityModule) ExportJSON(filePath string) error {
+	data := map[string]interface{}{
+		"timestamp":     time.Now().Format(time.RFC3339),
+		"recent_files":  m.recent,
+		"usb_devices":   m.usb,
+		"browser_items": m.browser,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
+}
+
+func (m *ActivityModule) ExportCSV(filePath string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	writer.Write([]string{"Type", "Name", "Value", "Timestamp", "RiskLevel"})
+
+	for _, r := range m.recent {
+		writer.Write([]string{
+			"recent_file",
+			r.Name,
+			r.Path,
+			r.Accessed.Format(time.RFC3339),
+			fmt.Sprintf("%v", r.RiskLevel),
+		})
+	}
+
+	for _, u := range m.usb {
+		writer.Write([]string{
+			"usb",
+			u.Name,
+			u.DeviceID,
+			u.LastInsert.Format(time.RFC3339),
+			fmt.Sprintf("%v", u.RiskLevel),
+		})
+	}
+
+	for _, b := range m.browser {
+		writer.Write([]string{
+			"browser",
+			b.Title,
+			b.URL,
+			b.VisitedAt.Format(time.RFC3339),
+			fmt.Sprintf("%v", b.RiskLevel),
+		})
+	}
+
+	return nil
 }

@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,4 +233,229 @@ func (m *LoggingModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
+}
+
+func (m *LoggingModule) CollectDNSLogs() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -LogName 'Microsoft-Windows-DNS Client Events/Operational' -MaxEvents 100 -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Output ($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + "|" + $_.Id.ToString() + "|" + $_.LevelDisplayName + "|" + $_.Message.Substring(0, [Math]::Min(200, $_.Message.Length)))
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 4 {
+				results = append(results, map[string]interface{}{
+					"timestamp": parts[0],
+					"event_id":  parts[1],
+					"level":     parts[2],
+					"message":   parts[3],
+					"type":      "dns_event",
+				})
+			}
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\DNS Client Events' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty File`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		dnsLogPath := strings.TrimSpace(string(output2))
+		if dnsLogPath != "" {
+			cmd3 := exec.Command("cmd", "/c", fmt.Sprintf("type \"%s\" 2>nul | findstr /i \"query request\" | findstr /v \"Cache\"", dnsLogPath))
+			output3, _ := cmd3.Output()
+			lines := strings.Split(string(output3), "\n")
+			for _, line := range lines {
+				if strings.TrimSpace(line) != "" {
+					results = append(results, map[string]interface{}{
+						"message": strings.TrimSpace(line),
+						"type":    "dns_query",
+					})
+				}
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *LoggingModule) FilterByLevel(level string) []EventLogEntry {
+	var results []EventLogEntry
+	for _, l := range m.logs {
+		if strings.ToLower(l.Level) == strings.ToLower(level) {
+			results = append(results, l)
+		}
+	}
+	return results
+}
+
+func (m *LoggingModule) FilterBySource(source string) []EventLogEntry {
+	var results []EventLogEntry
+	sourceLower := strings.ToLower(source)
+	for _, l := range m.logs {
+		if strings.Contains(strings.ToLower(l.Source), sourceLower) {
+			results = append(results, l)
+		}
+	}
+	return results
+}
+
+func (m *LoggingModule) FilterByEventID(eventID int) []EventLogEntry {
+	var results []EventLogEntry
+	for _, l := range m.logs {
+		if l.EventID == eventID {
+			results = append(results, l)
+		}
+	}
+	return results
+}
+
+func (m *LoggingModule) Search(keyword string) []EventLogEntry {
+	var results []EventLogEntry
+	keywordLower := strings.ToLower(keyword)
+	for _, l := range m.logs {
+		if strings.Contains(strings.ToLower(l.Message), keywordLower) ||
+			strings.Contains(strings.ToLower(l.Source), keywordLower) ||
+			strings.Contains(strconv.Itoa(l.EventID), keywordLower) {
+			results = append(results, l)
+		}
+	}
+	return results
+}
+
+func (m *LoggingModule) ParseEVTX(filePath string) ([]EventLogEntry, error) {
+	var results []EventLogEntry
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$events = Get-WinEvent -Path '%s' -ErrorAction SilentlyContinue
+foreach($e in $events) {
+    [xml]$xml = $e.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $dataStr = ''
+    foreach($d in $eventData) {
+        $dataStr += $d.'#text' + ' '
+    }
+    Write-Output ($e.TimeCreated.ToString('yyyy-MM-ddTHH:mm:ssZ') + "|" + $e.Id.ToString() + "|" + $e.LevelDisplayName + "|" + $e.ProviderName + "|" + $e.LogName + "|" + $e.MachineName + "|" + $dataStr.Substring(0, [Math]::Min(500, $dataStr.Length)))
+}`, filePath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse EVTX file: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 7)
+		if len(parts) >= 7 {
+			t, _ := time.Parse("2006-01-02T15:04:05Z", parts[0])
+			eventID, _ := strconv.Atoi(parts[1])
+			results = append(results, EventLogEntry{
+				EventID:     eventID,
+				EventType:   parts[4],
+				Level:       parts[2],
+				Source:      parts[3],
+				Channel:     parts[4],
+				Computer:    parts[5],
+				TimeCreated: t,
+				Message:     parts[6],
+				RawXML:      line,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *LoggingModule) ExportHTML(filePath string) error {
+	html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>ERT Event Log Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #4CAF50; color: white; }
+        .risk-high { color: red; font-weight: bold; }
+        .risk-medium { color: orange; }
+        .risk-low { color: green; }
+        .filter-bar { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>ERT Event Log Report</h1>
+    <p>Generated: ` + time.Now().Format(time.RFC3339) + `</p>
+    <p>Total Events: ` + fmt.Sprintf("%d", len(m.logs)) + `</p>
+    <table>
+        <tr>
+            <th>Timestamp</th>
+            <th>Event ID</th>
+            <th>Level</th>
+            <th>Source</th>
+            <th>Channel</th>
+            <th>Message</th>
+            <th>Risk</th>
+        </tr>`
+
+	for _, l := range m.logs {
+		riskClass := "risk-low"
+		if l.RiskLevel == model.RiskHigh || l.RiskLevel == model.RiskCritical {
+			riskClass = "risk-high"
+		} else if l.RiskLevel == model.RiskMedium {
+			riskClass = "risk-medium"
+		}
+
+		message := l.Message
+		if len(message) > 100 {
+			message = message[:100] + "..."
+		}
+
+		html += fmt.Sprintf(`        <tr>
+            <td>%s</td>
+            <td>%d</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td class="%s">%s</td>
+        </tr>`, l.TimeCreated.Format(time.RFC3339), l.EventID, l.Level, l.Source, l.Channel, message, riskClass, l.RiskLevel)
+	}
+
+	html += `    </table>
+</body>
+</html>`
+
+	return os.WriteFile(filePath, []byte(html), 0644)
+}
+
+func (m *LoggingModule) ExportJSON(filePath string) error {
+	data := map[string]interface{}{
+		"timestamp":    time.Now().Format(time.RFC3339),
+		"total_events": len(m.logs),
+		"logs":         m.logs,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
 }

@@ -84,6 +84,8 @@ func (m *RegistryModule) readRegistryValues(keyPath string) []model.RegistryKeyD
 	powershellPath = strings.Replace(powershellPath, "HKLM\\", "HKLM:", -1)
 	powershellPath = strings.Replace(powershellPath, "HKCU\\", "HKCU:", -1)
 
+	keyModified := m.getRegistryKeyModifiedTime(powershellPath)
+
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'; Get-ItemProperty -Path '%s' | ForEach-Object { $_.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { Add-Member -InputObject $_ -MemberType NoteProperty -Name ValueType -Value ($_.TypeNameOfValue -replace 'System\\.', '') -PassThru } } | Select-Object PSChildName, Value, ValueType | ConvertTo-Json -Compress`, powershellPath))
 
@@ -132,12 +134,26 @@ func (m *RegistryModule) readRegistryValues(keyPath string) []model.RegistryKeyD
 			Name:      name,
 			ValueType: valueType,
 			Value:     value,
-			Modified:  time.Now(),
+			Modified:  keyModified,
 			RiskLevel: model.RiskLow,
 		})
 	}
 
 	return result
+}
+
+func (m *RegistryModule) getRegistryKeyModifiedTime(powershellPath string) time.Time {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$item = Get-Item -Path '%s' -ErrorAction SilentlyContinue; if($item) { $item.LastWriteTime.ToString("yyyy-MM-ddTHH:mm:ssZ") }`, powershellPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return time.Now()
+	}
+	t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimSpace(string(output)))
+	if err != nil {
+		return time.Now()
+	}
+	return t
 }
 
 func (m *RegistryModule) normalizeValueType(typeName string) string {

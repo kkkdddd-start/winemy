@@ -142,6 +142,13 @@ func assessRiskLevel(name, path string, cmdline []string) model.RiskLevel {
 		}
 	}
 
+	if path != "" {
+		signed, _ := checkFileSignature(path)
+		if !signed {
+			return model.RiskMedium
+		}
+	}
+
 	if path == "" && name != "" {
 		return model.RiskMedium
 	}
@@ -151,6 +158,21 @@ func assessRiskLevel(name, path string, cmdline []string) model.RiskLevel {
 	}
 
 	return model.RiskLow
+}
+
+func checkFileSignature(path string) (bool, string) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$sig = Get-AuthenticodeSignature '%s' -ErrorAction SilentlyContinue; if($sig.Status -eq 'Valid') { Write-Output 'Signed' } elseif($sig.SignerCertificate -ne $null) { Write-Output 'SignedBy:' + $sig.SignerCertificate.Subject } else { Write-Output 'NotSigned' }`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return false, ""
+	}
+
+	result := strings.TrimSpace(string(output))
+	if strings.HasPrefix(result, "Signed") {
+		return true, result
+	}
+	return false, ""
 }
 
 func (m *ProcessModule) buildProcessTree() {

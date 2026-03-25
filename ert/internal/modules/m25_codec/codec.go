@@ -81,6 +81,8 @@ func (m *CodecModule) Encode(input string, codecType string) (string, error) {
 		result = m.encodeHTML(input)
 	case "binary":
 		result = m.encodeBinary(input)
+	case "octal":
+		result = m.encodeOctal(input)
 	default:
 		return "", fmt.Errorf("unsupported codec type: %s", codecType)
 	}
@@ -115,6 +117,8 @@ func (m *CodecModule) Decode(input string, codecType string) (string, error) {
 		result, err = m.decodeHTML(input)
 	case "binary":
 		result, err = m.decodeBinary(input)
+	case "octal":
+		result, err = m.decodeOctal(input)
 	default:
 		return "", fmt.Errorf("unsupported codec type: %s", codecType)
 	}
@@ -314,6 +318,40 @@ func (m *CodecModule) decodeBinary(input string) (string, error) {
 			b = b<<1 | byte(c-'0')
 		}
 		result.WriteByte(b)
+	}
+
+	return result.String(), nil
+}
+
+func (m *CodecModule) encodeOctal(input string) string {
+	var result strings.Builder
+	for _, r := range input {
+		result.WriteString(fmt.Sprintf("%03o", r))
+		result.WriteString(" ")
+	}
+	return strings.TrimSpace(result.String())
+}
+
+func (m *CodecModule) decodeOctal(input string) (string, error) {
+	input = strings.ReplaceAll(input, " ", "")
+	input = strings.ReplaceAll(input, "\n", "")
+	input = strings.TrimSpace(input)
+
+	if len(input)%3 != 0 {
+		return "", fmt.Errorf("invalid octal input: length must be multiple of 3")
+	}
+
+	var result strings.Builder
+	for i := 0; i < len(input); i += 3 {
+		octalStr := input[i : i+3]
+		var val byte
+		for _, c := range octalStr {
+			if c < '0' || c > '7' {
+				return "", fmt.Errorf("invalid octal character: %c", c)
+			}
+			val = val<<3 | byte(c-'0')
+		}
+		result.WriteByte(val)
 	}
 
 	return result.String(), nil

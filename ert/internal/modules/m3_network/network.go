@@ -214,6 +214,10 @@ func (m *NetworkModule) assessRiskLevel(remoteAddr string, remotePort uint16) mo
 		return model.RiskLow
 	}
 
+	if m.isForeignIP(remoteAddr) {
+		return model.RiskHigh
+	}
+
 	return model.RiskMedium
 }
 
@@ -235,6 +239,16 @@ func (m *NetworkModule) isPrivateIP(ipStr string) bool {
 		return true
 	}
 	return false
+}
+
+func (m *NetworkModule) isForeignIP(ipStr string) bool {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$result = Invoke-RestMethod -Uri "http://ip-api.com/json/%s" -TimeoutSec 3 -ErrorAction SilentlyContinue; if($result -and $result.countryCode -ne "CN") { Write-Output "true" } else { Write-Output "false" }`, ipStr))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(output)), "true")
 }
 
 func (m *NetworkModule) Search(keyword string) []model.NetworkConnDTO {
@@ -303,4 +317,61 @@ func (m *NetworkModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
+}
+
+func (m *NetworkModule) DetectPortForwarding() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("netsh", "interface", "portproxy", "show", "all")
+	output, err := cmd.Output()
+	if err != nil {
+		cmd2 := exec.Command("powershell", "-Command",
+			`$ErrorActionPreference='SilentlyContinue'
+Get-NetPortMapping | ForEach-Object {
+    Write-Output ($_.LocalAddress + '|' + $_.LocalPort + '|' + $_.RemoteAddress + '|' + $_.RemotePort)
+}`)
+
+		output2, err2 := cmd2.Output()
+		if err2 != nil {
+			return results, nil
+		}
+
+		lines := strings.Split(string(output2), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) >= 4 {
+				results = append(results, map[string]interface{}{
+					"type":           "port_forwarding",
+					"local_address":  parts[0],
+					"local_port":     parts[1],
+					"remote_address": parts[2],
+					"remote_port":    parts[3],
+				})
+			}
+		}
+		return results, nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Listen") || strings.Contains(line, "Connect") {
+			fields := strings.Fields(line)
+			if len(fields) >= 5 {
+				results = append(results, map[string]interface{}{
+					"type":            "port_forwarding",
+					"listen_address":  fields[1],
+					"listen_port":     fields[2],
+					"connect_address": fields[4],
+					"connect_port":    fields[5],
+				})
+			}
+		}
+	}
+
+	return results, nil
 }

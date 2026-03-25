@@ -4,6 +4,7 @@ package m19_domain
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -350,4 +351,128 @@ func (m *DomainModule) GetDomainInfo() map[string]interface{} {
 
 func (m *DomainModule) GetDomainUsers() []model.AccountDTO {
 	return m.domainUsers
+}
+
+func (m *DomainModule) CollectGroupMembers() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	for _, g := range m.domainGroups {
+		groupName, ok := g["name"].(string)
+		if !ok {
+			continue
+		}
+
+		cmd := exec.Command("net", "group", groupName, "/domain")
+		output, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(output), "\n")
+		inMemberSection := false
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "---") {
+				inMemberSection = true
+				continue
+			}
+			if inMemberSection && line != "" && !strings.HasPrefix(line, "The") && !strings.HasPrefix(line, "Group") && !strings.HasPrefix(line, "Comment") && !strings.HasPrefix(line, "Members") && !strings.HasPrefix(line, "command completed") {
+				results = append(results, map[string]interface{}{
+					"group_name": groupName,
+					"member":     line,
+					"type":       "group_member",
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *DomainModule) GetGroupDescription(groupName string) (string, error) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$group = Get-ADGroup -Identity '%s' -Properties Description -ErrorAction SilentlyContinue
+if($group) { Write-Output $group.Description } else { Write-Output '' }`, groupName))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get group description: %w", err)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (m *DomainModule) DetectOfflineMode() (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"is_offline":      false,
+		"domain_joined":   m.domainInfo["is_domain_joined"],
+		"domain_name":     m.domainInfo["domain"],
+		"check_timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$dc = Get-ADDomainController -Discover -DomainName (Get-ADDomain).Name -ErrorAction SilentlyContinue
+if($dc) {
+    $status = Test-Connection -ComputerName $dc.HostName -Count 1 -Quiet -ErrorAction SilentlyContinue
+    if($status) { Write-Output 'Online' } else { Write-Output 'Offline' }
+} else {
+    Write-Output 'NoDC'
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		status := strings.TrimSpace(string(output))
+		result["is_offline"] = status == "Offline" || status == "NoDC"
+		result["dc_status"] = status
+	}
+
+	cmd2 := exec.Command("nltest", "/dsgetdc:.")
+	output2, err := cmd2.Output()
+	if err == nil {
+		result["dc_info"] = strings.TrimSpace(string(output2))
+	}
+
+	return result, nil
+}
+
+func (m *DomainModule) Search(keyword string) ([]map[string]interface{}, error) {
+	results := []map[string]interface{}{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, u := range m.domainUsers {
+		if strings.Contains(strings.ToLower(u.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(u.FullName), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type": "domain_user",
+				"name": u.Name,
+			})
+		}
+	}
+
+	for _, g := range m.domainGroups {
+		if name, ok := g["name"].(string); ok {
+			if strings.Contains(strings.ToLower(name), keywordLower) {
+				results = append(results, map[string]interface{}{
+					"type": "domain_group",
+					"name": name,
+				})
+			}
+		}
+	}
+
+	for _, ou := range m.ouStruct {
+		if dn, ok := ou["dn"].(string); ok {
+			if strings.Contains(strings.ToLower(dn), keywordLower) {
+				results = append(results, map[string]interface{}{
+					"type": "organizational_unit",
+					"dn":   dn,
+				})
+			}
+		}
+	}
+
+	return results, nil
 }

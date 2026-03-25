@@ -104,6 +104,7 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 		}
 
 		file.Created = m.getFileCreationTime(path)
+		file.Accessed = m.getFileAccessTime(path)
 
 		file.IsHidden = m.isHiddenFile(path)
 
@@ -161,6 +162,20 @@ func (m *FilesystemModule) computeAllHashes(path string) (md5Hash, sha1Hash, sha
 func (m *FilesystemModule) getFileCreationTime(path string) time.Time {
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf(`(Get-Item '%s' -Force -ErrorAction SilentlyContinue).CreationTime.ToString("yyyy-MM-ddTHH:mm:ssZ")`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return time.Now()
+	}
+	t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimSpace(string(output)))
+	if err != nil {
+		return time.Now()
+	}
+	return t
+}
+
+func (m *FilesystemModule) getFileAccessTime(path string) time.Time {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`(Get-Item '%s' -Force -ErrorAction SilentlyContinue).LastAccessTime.ToString("yyyy-MM-ddTHH:mm:ssZ")`, path))
 	output, err := cmd.Output()
 	if err != nil {
 		return time.Now()
@@ -241,6 +256,16 @@ func (m *FilesystemModule) isHiddenFile(path string) bool {
 	return strings.Contains(strings.ToLower(string(output)), "true")
 }
 
+func (m *FilesystemModule) parseLnkFile(lnkPath string) (targetPath string, err error) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%s'); Write-Output $shortcut.TargetPath`, lnkPath))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 func (m *FilesystemModule) ScanPath(path string, recursive bool) ([]model.FileDTO, error) {
 	if recursive {
 		return m.scanDirectory(path, -1)
@@ -307,4 +332,73 @@ func (m *FilesystemModule) GetData() ([]map[string]interface{}, error) {
 		})
 	}
 	return result, nil
+}
+
+func (m *FilesystemModule) GetFileACL(filePath string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$acl = Get-Acl '%s' | Select-Object -ExpandProperty Access
+foreach($a in $acl) {
+    Write-Output ($a.IdentityReference.ToString() + "|" + $a.FileSystemRights.ToString() + "|" + $a.AccessControlType.ToString() + "|" + $a.IsInherited.ToString())
+}`, filePath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file ACL: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 4 {
+			results = append(results, map[string]interface{}{
+				"identity":  parts[0],
+				"rights":    parts[1],
+				"type":      parts[2],
+				"inherited": parts[3] == "True",
+				"file_path": filePath,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *FilesystemModule) StreamLargeFile(filePath string, chunkSize int64, callback func([]byte, int64) error) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	buffer := make([]byte, chunkSize)
+	offset := int64(0)
+
+	for {
+		bytesRead, err := file.Read(buffer)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("error reading file: %w", err)
+		}
+
+		if bytesRead == 0 {
+			break
+		}
+
+		data := make([]byte, bytesRead)
+		copy(data, buffer[:bytesRead])
+
+		if err := callback(data, offset); err != nil {
+			return fmt.Errorf("callback error at offset %d: %w", offset, err)
+		}
+
+		offset += int64(bytesRead)
+	}
+
+	return nil
 }

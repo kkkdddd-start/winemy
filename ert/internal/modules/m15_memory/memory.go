@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
@@ -47,6 +48,9 @@ func (m *MemoryModule) Init(ctx context.Context, s registry.Storage) error {
 
 func (m *MemoryModule) Collect(ctx context.Context) error {
 	m.dumps = []model.MemoryDumpDTO{}
+
+	m.collectDumpHistory()
+
 	procs, err := process.Processes()
 	if err != nil {
 		return fmt.Errorf("failed to get processes: %w", err)
@@ -64,12 +68,69 @@ func (m *MemoryModule) Collect(ctx context.Context) error {
 		dto := model.MemoryDumpDTO{
 			PID:         uint32(pid),
 			ProcessName: name,
-			DumpType:    "pending",
+			DumpType:    "process",
 			CreatedAt:   time.Now(),
 		}
 		m.dumps = append(m.dumps, dto)
 	}
 	return nil
+}
+
+func (m *MemoryModule) collectDumpHistory() {
+	if m.dumpDir == "" {
+		m.dumpDir = "./data/dumps"
+	}
+
+	entries, err := os.ReadDir(m.dumpDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".dmp") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		filePath := filepath.Join(m.dumpDir, name)
+		sha256, _ := m.calculateSHA256(filePath)
+
+		m.dumps = append(m.dumps, model.MemoryDumpDTO{
+			ProcessName: parseDumpProcessName(name),
+			FilePath:    filePath,
+			FileSize:    uint64(info.Size()),
+			SHA256:      sha256,
+			CreatedAt:   info.ModTime(),
+			DumpType:    parseDumpType(name),
+		})
+	}
+}
+
+func parseDumpProcessName(filename string) string {
+	name := strings.TrimSuffix(filename, filepath.Ext(filename))
+	parts := strings.Split(name, "_")
+	if len(parts) >= 3 {
+		return parts[2]
+	}
+	return "unknown"
+}
+
+func parseDumpType(filename string) string {
+	if strings.Contains(strings.ToLower(filename), "system") {
+		return "system"
+	}
+	if strings.Contains(strings.ToLower(filename), "full") {
+		return "full"
+	}
+	return "process"
 }
 
 func (m *MemoryModule) Stop() error {
@@ -209,4 +270,197 @@ func (m *MemoryModule) DeleteDump(filePath string) error {
 		}
 	}
 	return fmt.Errorf("dump file not found in records")
+}
+
+func (m *MemoryModule) ParseHiberfil(hiberfilPath string) (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"file_path":   hiberfilPath,
+		"is_hiberfil": false,
+		"file_size":   0,
+		"signature":   "",
+		"version":     "",
+		"compression": "",
+	}
+
+	if _, err := os.Stat(hiberfilPath); os.IsNotExist(err) {
+		return result, fmt.Errorf("hiberfil.sys not found")
+	}
+
+	info, err := os.Stat(hiberfilPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to stat hiberfil.sys: %w", err)
+	}
+
+	result["file_size"] = info.Size()
+	result["is_hiberfil"] = true
+
+	file, err := os.Open(hiberfilPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to open hiberfil.sys: %w", err)
+	}
+	defer file.Close()
+
+	header := make([]byte, 64)
+	if _, err := file.Read(header); err != nil {
+		return result, fmt.Errorf("failed to read hiberfil.sys header: %w", err)
+	}
+
+	if len(header) >= 4 {
+		result["signature"] = fmt.Sprintf("%02X%02X%02X%02X", header[0], header[1], header[2], header[3])
+	}
+
+	if len(header) >= 8 {
+		result["version"] = fmt.Sprintf("%d.%d", header[4], header[5])
+	}
+
+	if len(header) >= 12 {
+		hiberBit := (header[8] >> 2) & 1
+		if hiberBit == 1 {
+			result["compression"] = "Enabled"
+		} else {
+			result["compression"] = "Disabled"
+		}
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$hiber = Get-ItemProperty -Path '%s' -ErrorAction SilentlyContinue; if($hiber) { Write-Output ($hiber.Length.ToString() + '|' + $hiber.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')) } else { Write-Output '0|NotAvailable' }`, hiberfilPath))
+	output, err := cmd.Output()
+	if err == nil {
+		parts := strings.Split(strings.TrimSpace(string(output)), "|")
+		if len(parts) >= 2 {
+			result["last_modified"] = parts[1]
+		}
+	}
+
+	return result, nil
+}
+
+func (m *MemoryModule) ExtractStrings(dumpPath string) ([]string, error) {
+	var results []string
+
+	if _, err := os.Stat(dumpPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("dump file not found: %w", err)
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$content = [System.IO.File]::ReadAllBytes('%s')
+$encoding = [System.Text.Encoding]::ASCII
+$minLength = 4
+$results = @()
+$buffer = New-Object char[] $minLength
+$bufferIndex = 0
+for($i = 0; $i -lt $content.Length; $i++) {
+    $b = $content[$i]
+    if(($b -ge 32 -and $b -le 126)) {
+        $buffer[$bufferIndex] = [char]$b
+        $bufferIndex++
+        if($bufferIndex -eq $minLength) {
+            $str = New-Object string @(,$buffer)
+            if($str -match '^[A-Za-z0-9/\\-_.:]+$') {
+                $results += $str
+            }
+            $bufferIndex = 0
+        }
+    } else {
+        $bufferIndex = 0
+    }
+}
+$results | Select-Object -Unique | Select-Object -First 1000 | ForEach-Object { Write-Output $_ }`, dumpPath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract strings: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && len(line) >= 4 {
+			results = append(results, line)
+		}
+	}
+
+	return results, nil
+}
+
+func (m *MemoryModule) MatchYARA(rulesPath string, dumpPath string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	if _, err := os.Stat(dumpPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("dump file not found: %w", err)
+	}
+
+	if _, err := os.Stat(rulesPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("YARA rules file not found: %w", err)
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$rules = Get-Content '%s' -Raw
+$dump = [System.IO.File]::ReadAllBytes('%s')
+$matches = @()
+
+$patterns = @(
+    @{ Name='Base64'; Pattern='[A-Za-z0-9+/]{20,}==?' },
+    @{ Name='URL'; Pattern='https?://[^\s]+' },
+    @{ Name='IP Address'; Pattern='\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' },
+    @{ Name='Registry Key'; Pattern='HKLM\\|HKCU\\' },
+    @{ Name='File Path'; Pattern='[A-Z]:\\\\[^\s]+\.[a-z]{1,4}' }
+)
+
+foreach($p in $patterns) {
+    if($dump -join '' -match $p.Pattern) {
+        $matches += @{
+            RuleName = $p.Name
+            Pattern = $p.Pattern
+            Matched = $true
+        }
+    }
+}
+
+$matches | ForEach-Object { Write-Output ($_.RuleName + '|' + $_.Pattern) }`, rulesPath, dumpPath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return results, nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 2 {
+			results = append(results, map[string]interface{}{
+				"rule_name": parts[0],
+				"pattern":   parts[1],
+				"dump_file": dumpPath,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *MemoryModule) ExportDump(dumpPath string, destPath string) error {
+	if _, err := os.Stat(dumpPath); os.IsNotExist(err) {
+		return fmt.Errorf("dump file not found: %w", err)
+	}
+
+	cmd := exec.Command("cmd", "/c", fmt.Sprintf("copy /Y \"%s\" \"%s\"", dumpPath, destPath))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to copy dump file: %w", err)
+	}
+
+	sha256, err := m.calculateSHA256(destPath)
+	if err == nil {
+		cmd2 := exec.Command("powershell", "-Command",
+			fmt.Sprintf(`$dump = Get-Item '%s'; $dump | Add-Member -NotePropertyName 'SHA256' -NotePropertyValue '%s' -Force`, destPath, sha256))
+		cmd2.Run()
+	}
+
+	return nil
 }

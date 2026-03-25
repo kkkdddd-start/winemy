@@ -4,7 +4,9 @@ package m17_response
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,4 +224,126 @@ func (m *ResponseModule) GetActions() []map[string]interface{} {
 
 func (m *ResponseModule) ClearActions() {
 	m.actions = []map[string]interface{}{}
+}
+
+func (m *ResponseModule) IsConfirmed(action string) bool {
+	for _, a := range m.actions {
+		if a["type"] == action {
+			if confirmed, ok := a["confirmed"].(bool); ok && confirmed {
+				return true
+			}
+			if status, ok := a["status"].(string); ok && status == "confirmed" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *ResponseModule) BackupFile(filePath string) (string, error) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("file does not exist: %s", filePath)
+	}
+
+	backupDir := filepath.Join(m.quarantine, "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	ext := filepath.Ext(filePath)
+	baseName := filepath.Base(filePath)
+	timestamp := time.Now().Format("20060102_150405")
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_backup_%s%s", baseName[:len(baseName)-len(ext)], timestamp, ext))
+
+	sourceFile, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(backupPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create backup file: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return "", fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	m.logAction("backup_file", map[string]interface{}{
+		"original_path": filePath,
+		"backup_path":   backupPath,
+		"status":        "success",
+		"timestamp":     time.Now().Format(time.RFC3339),
+	})
+
+	return backupPath, nil
+}
+
+func (m *ResponseModule) RestoreFile(backupPath string) (string, error) {
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("backup file does not exist: %s", backupPath)
+	}
+
+	ext := filepath.Ext(backupPath)
+	baseName := filepath.Base(backupPath)
+	parts := strings.Split(baseName, "_backup_")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid backup filename format")
+	}
+	originalName := parts[0] + ext
+	restorePath := filepath.Join(filepath.Dir(backupPath), "..", "restored", originalName)
+
+	if err := os.MkdirAll(filepath.Dir(restorePath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create restore directory: %w", err)
+	}
+
+	sourceFile, err := os.Open(backupPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open backup file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(restorePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create restored file: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return "", fmt.Errorf("failed to restore file: %w", err)
+	}
+
+	m.logAction("restore_file", map[string]interface{}{
+		"backup_path":  backupPath,
+		"restore_path": restorePath,
+		"status":       "success",
+		"timestamp":    time.Now().Format(time.RFC3339),
+	})
+
+	return restorePath, nil
+}
+
+func (m *ResponseModule) ExportAuditLog(filePath string) error {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	auditLog := map[string]interface{}{
+		"export_timestamp": time.Now().Format(time.RFC3339),
+		"total_actions":    len(m.actions),
+		"actions":          m.actions,
+	}
+
+	jsonData, err := json.MarshalIndent(auditLog, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal audit log: %w", err)
+	}
+
+	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write audit log: %w", err)
+	}
+
+	return nil
 }

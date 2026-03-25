@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/yourname/ert/internal/registry"
 )
@@ -277,6 +279,10 @@ func (m *IISModule) assessIISLogRisk(entry map[string]interface{}) int {
 				return 2
 			}
 		}
+
+		if strings.Contains(uri, "../") || strings.Contains(uri, "..\\") {
+			return 3
+		}
 	}
 
 	if csUriQuery, ok := entry["cs-uri-query"].(string); ok {
@@ -285,6 +291,10 @@ func (m *IISModule) assessIISLogRisk(entry map[string]interface{}) int {
 			if strings.Contains(strings.ToLower(csUriQuery), s) {
 				return 3
 			}
+		}
+
+		if strings.Contains(csUriQuery, "../") || strings.Contains(csUriQuery, "..\\") {
+			return 3
 		}
 	}
 
@@ -674,3 +684,121 @@ func (m *IISModule) GetIISLogs() []map[string]interface{} {
 func (m *IISModule) GetLogPaths() map[string]string {
 	return m.logPaths
 }
+
+func (m *IISModule) GetIPLocation(ip string) (string, string, error) {
+	if ip == "" {
+		return "Unknown", "Unknown", nil
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$result = Invoke-RestMethod -Uri "http://ip-api.com/json/%s" -TimeoutSec 5 -ErrorAction SilentlyContinue; if($result) { Write-Output "$($result.country)|$($result.city)" } else { Write-Output "Unknown|Unknown" }`, ip))
+	output, err := cmd.Output()
+	if err != nil {
+		return "Unknown", "Unknown", nil
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(output)), "|")
+	if len(parts) >= 2 {
+		return parts[0], parts[1], nil
+	}
+	return "Unknown", "Unknown", nil
+}
+
+func (m *IISModule) GetIPGeoStats() (map[string]interface{}, error) {
+	stats := make(map[string]interface{})
+	stats["total_requests"] = 0
+	stats["unique_ips"] = 0
+	stats["country_stats"] = make(map[string]int)
+	stats["top_ips"] = []map[string]interface{}{}
+	stats["timestamp"] = time.Now().Format(time.RFC3339)
+
+	ipCounts := make(map[string]int)
+	countryCounts := make(map[string]int)
+
+	for _, log := range m.iisLogs {
+		if ip, ok := log["c-ip"].(string); ok && ip != "" {
+			ipCounts[ip]++
+			stats["total_requests"] = stats["total_requests"].(int) + 1
+
+			country, _, _ := m.GetIPLocation(ip)
+			if country != "" && country != "Unknown" {
+				countryCounts[country]++
+			}
+		}
+	}
+
+	for _, log := range m.apacheLogs {
+		if ip, ok := log["ip"].(string); ok && ip != "" {
+			ipCounts[ip]++
+			stats["total_requests"] = stats["total_requests"].(int) + 1
+
+			country, _, _ := m.GetIPLocation(ip)
+			if country != "" && country != "Unknown" {
+				countryCounts[country]++
+			}
+		}
+	}
+
+	for _, log := range m.nginxLogs {
+		if ip, ok := log["ip"].(string); ok && ip != "" {
+			ipCounts[ip]++
+			stats["total_requests"] = stats["total_requests"].(int) + 1
+
+			country, _, _ := m.GetIPLocation(ip)
+			if country != "" && country != "Unknown" {
+				countryCounts[country]++
+			}
+		}
+	}
+
+	stats["unique_ips"] = len(ipCounts)
+	stats["country_stats"] = countryCounts
+
+	type ipCount struct {
+		IP    string
+		Count int
+	}
+
+	var sorted []ipCount
+	for ip, count := range ipCounts {
+		sorted = append(sorted, ipCount{IP: ip, Count: count})
+	}
+
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Count > sorted[j].Count
+	})
+
+	topIPs := []map[string]interface{}{}
+	for i := 0; i < len(sorted) && i < 10; i++ {
+		country, _, _ := m.GetIPLocation(sorted[i].IP)
+		topIPs = append(topIPs, map[string]interface{}{
+			"ip":      sorted[i].IP,
+			"count":   sorted[i].Count,
+			"country": country,
+		})
+	}
+	stats["top_ips"] = topIPs
+
+	return stats, nil
+}
+
+func (m *IISModule) ExportReport(filePath string) error {
+	data := map[string]interface{}{
+		"timestamp":    time.Now().Format(time.RFC3339),
+		"log_paths":    m.logPaths,
+		"iis_count":    len(m.iisLogs),
+		"apache_count": len(m.apacheLogs),
+		"nginx_count":  len(m.nginxLogs),
+		"sql_count":    len(m.sqlLogs),
+		"tomcat_count": len(m.tomcatLogs),
+		"iis_logs":     m.iisLogs,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal report data: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
+}
+

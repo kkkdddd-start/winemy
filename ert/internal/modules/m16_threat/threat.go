@@ -4,6 +4,10 @@ package m16_threat
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -278,4 +282,285 @@ func (m *ThreatModule) GetMaliciousProcesses() []model.ProcessDTO {
 
 func (m *ThreatModule) GetSuspiciousNetwork() []model.NetworkConnDTO {
 	return m.suspiciousNet
+}
+
+func (m *ThreatModule) DetectRemoteThread() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Security';ID=8} -MaxEvents 100 -ErrorAction SilentlyContinue | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $targetPID = ($eventData | Where-Object { $_.Name -eq 'TargetProcessId' }).'#text'
+    $sourcePID = ($eventData | Where-Object { $_.Name -eq 'SourceProcessId' }).'#text'
+    $newThread = ($eventData | Where-Object { $_.Name -eq 'NewThreadId' }).'#text'
+    if($targetPID -and $sourcePID) {
+        $sourceProc = Get-Process -Id $sourcePID -ErrorAction SilentlyContinue
+        $targetProc = Get-Process -Id $targetPID -ErrorAction SilentlyContinue
+        Write-Output ($sourceProc.ProcessName + '|' + $targetProc.ProcessName + '|' + $sourcePID + '|' + $targetPID + '|' + $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect remote thread: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 5 {
+			results = append(results, map[string]interface{}{
+				"source_process": parts[0],
+				"target_process": parts[1],
+				"source_pid":     parts[2],
+				"target_pid":     parts[3],
+				"timestamp":      parts[4],
+				"type":           "remote_thread",
+				"risk_level":     model.RiskHigh,
+			})
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$procs = Get-Process
+foreach($p in $procs) {
+    $threads = $p.Threads
+    foreach($t in $threads) {
+        if($t.WaitReason -eq 'Suspended' -and $t.ThreadState -eq 'Wait') {
+            Write-Output ($p.ProcessName + '|' + $p.Id.ToString() + '|Suspended')
+        }
+    }
+}`)
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines2 := strings.Split(string(output2), "\n")
+		for _, line := range lines2 {
+			parts := strings.Split(strings.TrimSpace(line), "|")
+			if len(parts) >= 3 && parts[2] == "Suspended" {
+				results = append(results, map[string]interface{}{
+					"source_process": parts[0],
+					"target_pid":     parts[1],
+					"type":           "suspicious_thread",
+					"risk_level":     model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ThreatModule) LoadThreatDB(dbPath string) error {
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return fmt.Errorf("threat database file not found: %w", err)
+	}
+
+	content, err := os.ReadFile(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to read threat database: %w", err)
+	}
+
+	var threatDB struct {
+		Rules []struct {
+			ID       string   `json:"id"`
+			Name     string   `json:"name"`
+			Patterns []string `json:"patterns"`
+			Severity string   `json:"severity"`
+		} `json:"rules"`
+	}
+
+	if err := json.Unmarshal(content, &threatDB); err != nil {
+		return fmt.Errorf("failed to parse threat database: %w", err)
+	}
+
+	for _, rule := range threatDB.Rules {
+		m.threatRules = append(m.threatRules, model.AlertRule{
+			ID:      rule.ID,
+			Name:    rule.Name,
+			Enabled: true,
+		})
+	}
+
+	return nil
+}
+
+func (m *ThreatModule) MatchYARA(rulesPath string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	if _, err := os.Stat(rulesPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("YARA rules file not found: %w", err)
+	}
+
+	psRulePath := rulesPath + ".ps1"
+	scriptContent := fmt.Sprintf(`
+$ErrorActionPreference='SilentlyContinue'
+$rules = Get-Content '%s' -Raw
+$processes = Get-Process | Select-Object Name, Path, Id
+
+$yaraMatches = @()
+
+if($rules -match 'rule\s+(\w+)\s*\{') {
+    $matches = [regex]::Matches($rules, 'rule\s+(\w+)\s*\{[^}]*strings[^}]*\}')
+    foreach($m in $matches) {
+        $ruleName = $m.Groups[1].Value
+        $yaraMatches += @{
+            RuleName = $ruleName
+            Matched = $false
+            ProcessName = ''
+            ProcessID = 0
+        }
+    }
+}
+
+foreach($p in $processes) {
+    if($p.Path) {
+        $content = Get-Content $p.Path -Raw -ErrorAction SilentlyContinue
+        if($content -and $rules) {
+            if($rules -match $p.Name -or $content -match 'mimikatz|password|credential') {
+                foreach($ym in $yaraMatches) {
+                    if($ym.RuleName -match $p.Name) {
+                        $ym.Matched = $true
+                        $ym.ProcessName = $p.Name
+                        $ym.ProcessID = $p.Id
+                    }
+                }
+            }
+        }
+    }
+}
+
+$yaraMatches | Where-Object { $_.Matched } | ForEach-Object { Write-Output ($_.RuleName + '|' + $_.ProcessName + '|' + $_.ProcessID.ToString()) }
+`, rulesPath)
+
+	if err := os.WriteFile(psRulePath, []byte(scriptContent), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write temporary script: %w", err)
+	}
+	defer os.Remove(psRulePath)
+
+	cmd := exec.Command("powershell", "-ExecutionPolicy", "Bypass", "-File", psRulePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return results, nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 3 {
+			results = append(results, map[string]interface{}{
+				"rule_name":    parts[0],
+				"process_name": parts[1],
+				"process_id":   parts[2],
+				"type":         "yara_match",
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (m *ThreatModule) DeduplicateAlerts() []model.AlertEvent {
+	seen := make(map[string]bool)
+	var unique []model.AlertEvent
+
+	allAlerts := make([]model.AlertEvent, 0)
+	for _, p := range m.malProcesses {
+		allAlerts = append(allAlerts, model.AlertEvent{
+			ID:       fmt.Sprintf("proc_%d_%s", p.PID, p.Name),
+			RuleID:   "malicious_process",
+			RuleName: "Malicious Process Detected",
+			Severity: p.RiskLevel,
+			Message:  fmt.Sprintf("Suspicious process: %s (PID: %d)", p.Name, p.PID),
+			ModuleID: 16,
+		})
+	}
+	for _, n := range m.suspiciousNet {
+		allAlerts = append(allAlerts, model.AlertEvent{
+			ID:       fmt.Sprintf("net_%d_%s_%d", n.PID, n.RemoteAddr, n.RemotePort),
+			RuleID:   "suspicious_network",
+			RuleName: "Suspicious Network Connection",
+			Severity: n.RiskLevel,
+			Message:  fmt.Sprintf("Suspicious connection from %s:%d to %s:%d", n.LocalAddr, n.LocalPort, n.RemoteAddr, n.RemotePort),
+			ModuleID: 16,
+		})
+	}
+	for _, a := range m.sensitiveActs {
+		if name, ok := a["name"].(string); ok {
+			allAlerts = append(allAlerts, model.AlertEvent{
+				ID:       fmt.Sprintf("beh_%s_%v", name, a["pid"]),
+				RuleID:   "sensitive_behavior",
+				RuleName: "Sensitive Behavior Detected",
+				Severity: model.RiskMedium,
+				Message:  fmt.Sprintf("Sensitive behavior: %v", a["description"]),
+				ModuleID: 16,
+			})
+		}
+	}
+
+	for _, alert := range allAlerts {
+		key := fmt.Sprintf("%s_%s_%v", alert.RuleID, alert.RuleName, alert.Message)
+		if !seen[key] {
+			seen[key] = true
+			unique = append(unique, alert)
+		}
+	}
+
+	return unique
+}
+
+func (m *ThreatModule) Search(keyword string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	keywordLower := strings.ToLower(keyword)
+
+	for _, p := range m.malProcesses {
+		if strings.Contains(strings.ToLower(p.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(p.Path), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":       "malicious_process",
+				"name":       p.Name,
+				"pid":        p.PID,
+				"path":       p.Path,
+				"risk_level": p.RiskLevel,
+			})
+		}
+	}
+
+	for _, n := range m.suspiciousNet {
+		if strings.Contains(strings.ToLower(n.RemoteAddr), keywordLower) ||
+			strings.Contains(strings.ToLower(n.ProcessName), keywordLower) {
+			results = append(results, map[string]interface{}{
+				"type":        "suspicious_network",
+				"process":     n.ProcessName,
+				"remote_addr": n.RemoteAddr,
+				"remote_port": n.RemotePort,
+				"risk_level":  n.RiskLevel,
+			})
+		}
+	}
+
+	for _, a := range m.sensitiveActs {
+		if desc, ok := a["description"].(string); ok {
+			if strings.Contains(strings.ToLower(desc), keywordLower) {
+				results = append(results, map[string]interface{}{
+					"type":        "sensitive_behavior",
+					"description": desc,
+					"risk_level":  a["risk_level"],
+				})
+			}
+		}
+	}
+
+	return results, nil
 }

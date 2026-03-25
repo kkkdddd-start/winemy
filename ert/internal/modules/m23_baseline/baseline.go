@@ -4,7 +4,9 @@ package m23_baseline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -378,4 +380,168 @@ func (m *BaselineModule) GetNetworkSecurity() []map[string]interface{} {
 
 func (m *BaselineModule) GetServiceConfig() []map[string]interface{} {
 	return m.serviceConfig
+}
+
+func (m *BaselineModule) CheckFirewallStatus() (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"domain_profile":  "Unknown",
+		"private_profile": "Unknown",
+		"public_profile":  "Unknown",
+		"check_timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	cmd := exec.Command("netsh", "advfirewall", "show", "allprofiles", "state")
+	output, err := cmd.Output()
+	if err != nil {
+		return result, fmt.Errorf("failed to check firewall status: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	currentProfile := ""
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Domain Profile") {
+			currentProfile = "domain_profile"
+		} else if strings.Contains(line, "Private Profile") {
+			currentProfile = "private_profile"
+		} else if strings.Contains(line, "Public Profile") {
+			currentProfile = "public_profile"
+		} else if strings.Contains(line, "State") && currentProfile != "" {
+			if strings.Contains(line, "ON") {
+				result[currentProfile] = "Enabled"
+			} else if strings.Contains(line, "OFF") {
+				result[currentProfile] = "Disabled"
+				result["risk_level"] = model.RiskHigh
+			}
+		}
+	}
+
+	if result["risk_level"] == nil {
+		result["risk_level"] = model.RiskLow
+	}
+
+	return result, nil
+}
+
+func (m *BaselineModule) CheckUACSettings() (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"uac_enabled":     false,
+		"consent_admin":   false,
+		"consent_ui":      false,
+		"enable_lua":      false,
+		"check_timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$uac = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+Write-Output ("EnableLUA:" + $uac.EnableLUA)
+Write-Output ("ConsentAdmin:" + $uac.ConsentAdminBehaviorLast)
+Write-Output ("ConsentUI:" + $uac.EnableUI)
+Write-Output ("FilterAdmin:" + $uac.FilterAdministratorToken)`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return result, fmt.Errorf("failed to check UAC settings: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "EnableLUA:") {
+			val := strings.TrimPrefix(line, "EnableLUA:")
+			result["uac_enabled"] = strings.TrimSpace(val) == "1"
+		} else if strings.HasPrefix(line, "ConsentAdmin:") {
+			val := strings.TrimPrefix(line, "ConsentAdmin:")
+			result["consent_admin"] = strings.TrimSpace(val) == "2"
+		} else if strings.HasPrefix(line, "ConsentUI:") {
+			val := strings.TrimPrefix(line, "ConsentUI:")
+			result["consent_ui"] = strings.TrimSpace(val) == "1"
+		} else if strings.HasPrefix(line, "FilterAdmin:") {
+			val := strings.TrimPrefix(line, "FilterAdmin:")
+			result["enable_lua"] = strings.TrimSpace(val) == "1"
+		}
+	}
+
+	if !result["uac_enabled"].(bool) || !result["enable_lua"].(bool) {
+		result["risk_level"] = model.RiskCritical
+	} else if !result["consent_admin"].(bool) {
+		result["risk_level"] = model.RiskMedium
+	} else {
+		result["risk_level"] = model.RiskLow
+	}
+
+	return result, nil
+}
+
+func (m *BaselineModule) DetectLMHashStorage() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+$lmHash = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'NoLMHash' -ErrorAction SilentlyContinue
+if($lmHash) {
+    if($lmHash.NoLMHash -eq 0) {
+        Write-Output 'LMHash:Enabled'
+    } else {
+        Write-Output 'LMHash:Disabled'
+    }
+} else {
+    Write-Output 'LMHash:Unknown'
+}`)
+
+	output, err := cmd.Output()
+	if err == nil {
+		result := strings.TrimSpace(string(output))
+		if result == "LMHash:Enabled" {
+			results = append(results, map[string]interface{}{
+				"setting":        "LM Hash Storage",
+				"status":         "Enabled - LM hashes stored in SAM",
+				"risk_level":     model.RiskHigh,
+				"recommendation": "Disable LM hash storage via NoLMHash registry key",
+			})
+		} else if result == "LMHash:Disabled" {
+			results = append(results, map[string]interface{}{
+				"setting":    "LM Hash Storage",
+				"status":     "Disabled",
+				"risk_level": model.RiskLow,
+			})
+		}
+	}
+
+	cmd2 := exec.Command("net", "accounts")
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines := strings.Split(string(output2), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Lannman Authentication Level") {
+				results = append(results, map[string]interface{}{
+					"setting":    "LM Authentication",
+					"status":     strings.TrimSpace(strings.Split(line, ":")[1]),
+					"risk_level": model.RiskMedium,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+func (m *BaselineModule) ExportReport(filePath string) error {
+	data := map[string]interface{}{
+		"timestamp":        time.Now().Format(time.RFC3339),
+		"password_policy":  m.passwordPolicy,
+		"account_policy":   m.accountPolicy,
+		"audit_policy":     m.auditPolicy,
+		"network_security": m.networkSecurity,
+		"service_config":   m.serviceConfig,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal baseline data: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
 }

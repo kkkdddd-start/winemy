@@ -4,8 +4,10 @@ package m5_service
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -217,6 +219,36 @@ func (m *ServiceModule) Stop() error {
 	return nil
 }
 
+func (m *ServiceModule) StartService(serviceName string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`Start-Service -Name '%s' -ErrorAction Stop`, serviceName))
+	_, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to start service %s: %w", serviceName, err)
+	}
+	return nil
+}
+
+func (m *ServiceModule) StopService(serviceName string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`Stop-Service -Name '%s' -Force -ErrorAction Stop`, serviceName))
+	_, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to stop service %s: %w", serviceName, err)
+	}
+	return nil
+}
+
+func (m *ServiceModule) RestartService(serviceName string) error {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`Restart-Service -Name '%s' -Force -ErrorAction Stop`, serviceName))
+	_, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to restart service %s: %w", serviceName, err)
+	}
+	return nil
+}
+
 func (m *ServiceModule) GetData() ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0, len(m.services))
 	for _, s := range m.services {
@@ -226,8 +258,71 @@ func (m *ServiceModule) GetData() ([]map[string]interface{}, error) {
 			"status":       s.Status,
 			"start_type":   s.StartType,
 			"path":         s.Path,
+			"dependencies": s.Dependencies,
+			"description":  s.Description,
 			"risk_level":   s.RiskLevel,
 		})
 	}
 	return result, nil
+}
+
+func (m *ServiceModule) Search(keyword string) []model.ServiceDTO {
+	results := []model.ServiceDTO{}
+	keywordLower := strings.ToLower(keyword)
+	for _, s := range m.services {
+		if strings.Contains(strings.ToLower(s.Name), keywordLower) ||
+			strings.Contains(strings.ToLower(s.DisplayName), keywordLower) ||
+			strings.Contains(strings.ToLower(s.Path), keywordLower) {
+			results = append(results, s)
+		}
+	}
+	return results
+}
+
+func (m *ServiceModule) DetectDisabledSecurityServices() []model.ServiceDTO {
+	securityServices := []string{
+		"WinDefend", "wscsvc", "SecurityHealthService", "WdNisSvc",
+		"MsMpEng", "NisSrv", "SgrmBroker", "ThreatIntelligenceFiltering",
+		"Windows Defender", "Windows Security Service", " Sense", "Defender",
+	}
+	disabled := []model.ServiceDTO{}
+	for _, s := range m.services {
+		if s.Status == "Stopped" || s.StartType == "Disabled" {
+			for _, sec := range securityServices {
+				if strings.Contains(strings.ToLower(s.Name), strings.ToLower(sec)) ||
+					strings.Contains(strings.ToLower(s.DisplayName), strings.ToLower(sec)) {
+					disabled = append(disabled, s)
+					break
+				}
+			}
+		}
+	}
+	return disabled
+}
+
+func (m *ServiceModule) ExportToJSON(filePath string) error {
+	data, err := json.MarshalIndent(m.services, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal services: %w", err)
+	}
+	return os.WriteFile(filePath, data, 0644)
+}
+
+func (m *ServiceModule) ExportToCSV(filePath string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	writer.Write([]string{"Name", "DisplayName", "Status", "StartType", "Path", "Dependencies", "Description", "RiskLevel"})
+	for _, s := range m.services {
+		writer.Write([]string{
+			s.Name, s.DisplayName, s.Status, s.StartType, s.Path, s.Dependencies, s.Description, fmt.Sprintf("%v", s.RiskLevel),
+		})
+	}
+	return nil
 }
