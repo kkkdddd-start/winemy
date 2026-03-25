@@ -267,6 +267,56 @@ func (m *KernelModule) Stop() error {
 	return nil
 }
 
+func (m *KernelModule) DetectFilterDrivers() ([]map[string]interface{}, error) {
+	filterDrivers := []map[string]interface{}{}
+
+	cmd := exec.Command("powershell", "-Command",
+		`fltmc.exe filters 2>$null; if($LASTEXITCODE -ne 0) { Get-WmiObject -Class MSFilterDriver | Select-Object FilterName, altitude, Flags | ConvertTo-Json }`)
+	output, err := cmd.Output()
+	if err != nil {
+		cmd = exec.Command("powershell", "-Command",
+			`$drivers = @(); Get-WmiObject -Namespace root -Class __Namespace -ErrorAction SilentlyContinue | ForEach-Object { $ns = $_.Name; if($ns -match 'Security|FileInfo') { $drivers += $ns } }; $drivers | ConvertTo-Json`)
+		output, err = cmd.Output()
+	}
+
+	if err == nil && len(output) > 2 {
+		var drivers []map[string]interface{}
+		if json.Unmarshal(output, &drivers) == nil {
+			for _, d := range drivers {
+				if name, ok := d["FilterName"].(string); ok {
+					filterDrivers = append(filterDrivers, map[string]interface{}{
+						"name":     name,
+						"altitude": d["altitude"],
+						"flags":    d["Flags"],
+						"type":     "minifilter",
+					})
+				}
+			}
+		}
+	}
+
+	cmd = exec.Command("powershell", "-Command",
+		`$drivers = @(); Get-WmiObject -Class Win32_SystemDriver | Where-Object { $_.ServiceType -match 'File System Filter|FSFilter' } | Select-Object Name, DisplayName, PathName, ServiceType | ConvertTo-Json`)
+	output, err = cmd.Output()
+	if err == nil && len(output) > 2 {
+		var drivers []map[string]interface{}
+		if json.Unmarshal(output, &drivers) == nil {
+			for _, d := range drivers {
+				if name, ok := d["Name"].(string); ok {
+					filterDrivers = append(filterDrivers, map[string]interface{}{
+						"name":         name,
+						"display_name": d["DisplayName"],
+						"path":         d["PathName"],
+						"type":         "filesystem",
+					})
+				}
+			}
+		}
+	}
+
+	return filterDrivers, nil
+}
+
 func (m *KernelModule) GetData() ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0, len(m.drivers))
 	for _, d := range m.drivers {
@@ -309,58 +359,6 @@ func (m *KernelModule) GetDriverCompany(driverPath string) (string, error) {
 		return "Unknown", fmt.Errorf("failed to get driver company")
 	}
 	return strings.TrimSpace(string(output)), nil
-}
-
-func (m *KernelModule) DetectFilterDrivers() ([]map[string]interface{}, error) {
-	var results []map[string]interface{}
-
-	cmd := exec.Command("fltmc.exe")
-	output, err := cmd.Output()
-	if err != nil {
-		cmd2 := exec.Command("powershell", "-Command",
-			`$ErrorActionPreference='SilentlyContinue'
-$filterDrivers = @()
-$drivers = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\*' | Where-Object { $_.Type -eq '2' -and $_.Start -eq '0' }
-foreach($d in $drivers) {
-    $filterDrivers += @{
-        'Name' = $d.PSChildName
-        'DisplayName' = $d.DisplayName
-        'Path' = $d.ImagePath
-    }
-}
-$filterDrivers | ConvertTo-Json`)
-
-		output2, err2 := cmd2.Output()
-		if err2 != nil {
-			return nil, fmt.Errorf("fltmc.exe not available and alternative detection failed: %w", err)
-		}
-		if err := json.Unmarshal(output2, &results); err != nil {
-			var single map[string]interface{}
-			if err := json.Unmarshal(output2, &single); err == nil {
-				results = []map[string]interface{}{single}
-			}
-		}
-		return results, nil
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for i, line := range lines {
-		if i < 3 {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) >= 3 {
-			results = append(results, map[string]interface{}{
-				"name":       fields[0],
-				"altitude":   fields[1],
-				"status":     fields[2],
-				"type":       "filter_driver",
-				"risk_level": model.RiskMedium,
-			})
-		}
-	}
-
-	return results, nil
 }
 
 func (m *KernelModule) Search(keyword string) ([]model.DriverDTO, error) {
