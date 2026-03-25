@@ -589,6 +589,84 @@ async function handleRestoreRegistry() {
 
   actionLoading.value = true
   try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('restore_registry', `${restoreRegistryForm.value.path}|${restoreRegistryForm.value.valueName}`)
+
+    historyList.value.unshift({
+      timestamp: new Date().toISOString(),
+      type: 'restore_registry',
+      path: `${restoreRegistryForm.value.path}\\${restoreRegistryForm.value.valueName}`,
+      status: 'success',
+      message: '注册表已恢复'
+    })
+
+    restoreRegistryDialogVisible.value = false
+    ElMessage.success('注册表已恢复')
+  } catch (error) {
+    ElMessage.error('注册表修复失败: ' + (error instanceof Error ? error.message : String(error)))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+async function handleBackup() {
+  if (!backupForm.value.path) {
+    ElMessage.warning('请输入文件路径')
+    return
+  }
+
+  actionLoading.value = true
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('backup_file', backupForm.value.path)
+
+    historyList.value.unshift({
+      timestamp: new Date().toISOString(),
+      type: 'backup_file',
+      path: backupForm.value.path,
+      status: 'success',
+      message: '文件已备份'
+    })
+
+    backupDialogVisible.value = false
+    ElMessage.success('文件已备份')
+  } catch (error) {
+    ElMessage.error('文件备份失败: ' + (error instanceof Error ? error.message : String(error)))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+async function handleRestoreFile() {
+  if (!restoreFileForm.value.backupPath) {
+    ElMessage.warning('请输入备份文件路径')
+    return
+  }
+
+  actionLoading.value = true
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    await Go.ResponseAction('restore_file', restoreFileForm.value.backupPath)
+
+    historyList.value.unshift({
+      timestamp: new Date().toISOString(),
+      type: 'restore_file',
+      backup_path: restoreFileForm.value.backupPath,
+      status: 'success',
+      message: '文件已恢复'
+    })
+
+    restoreFileDialogVisible.value = false
+    ElMessage.success('文件已恢复')
+  } catch (error) {
+    ElMessage.error('文件恢复失败: ' + (error instanceof Error ? error.message : String(error)))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+  actionLoading.value = true
+  try {
     await new Promise(resolve => setTimeout(resolve, 500))
 
     historyList.value.unshift({

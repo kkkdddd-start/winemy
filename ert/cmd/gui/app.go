@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/yourname/ert/internal/config"
 	"github.com/yourname/ert/internal/core/storage"
@@ -350,6 +351,17 @@ func (a *App) ResponseAction(action string, target string) error {
 			return respModule.BlockIP(target)
 		case "unblock_ip":
 			return respModule.UnblockIP(target)
+		case "restore_registry":
+			parts := strings.Split(target, "|")
+			if len(parts) >= 2 {
+				return respModule.RestoreRegistry(parts[0], parts[1])
+			}
+		case "backup_file":
+			_, err := respModule.BackupFile(target)
+			return err
+		case "restore_file":
+			_, err := respModule.RestoreFile(target)
+			return err
 		}
 	}
 	return fmt.Errorf("unsupported action: %s", action)
