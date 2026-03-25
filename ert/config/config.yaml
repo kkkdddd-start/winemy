@@ -1,0 +1,140 @@
+app:
+  name: "Windows 应急响应工具"
+  version: "13.0"
+  debug: false
+
+server:
+  host: "localhost"
+  port: 9277
+
+database:
+  main:
+    path: "./data/ert.db"
+    wal_mode: true
+    busy_timeout: 5000
+    max_open_conns: 10
+  cache:
+    max_cost: 100 * 1024 * 1024  # 100MB
+    buffer_size: 32 * 1024       # 32KB
+    ttl: 10m                     # 10分钟
+
+storage:
+  data_dir: "./data"
+  dump_dir: "./data/memory"
+  report_dir: "./data/reports"
+  max_storage: 50  # GB
+
+concurrency:
+  high_priority_workers: 10    # P0 任务
+  medium_priority_workers: 5   # P1 任务
+  low_priority_workers: 2     # P2 任务
+  aging:
+    max_wait_time: 5m
+    boost_threshold: 10
+    priority_boost: 2
+    check_interval: 30s
+
+timeout:
+  global: 5m
+  module:
+    process: 30s
+    network: 30s
+    registry: 60s
+    filesystem: 300s
+    logging: 600s
+    memory_dump: 600s
+
+security:
+  readonly: true
+  response:
+    require_confirmation: true
+    allow_kill_critical: false
+    backup_before_action: true
+    critical_processes:
+      - "lsass.exe"
+      - "winlogon.exe"
+      - "csrss.exe"
+      - "smss.exe"
+  audit:
+    enabled: true
+    encrypt: false
+    retention_days: 90
+
+modules:
+  system:
+    refresh_interval: 1s
+  process:
+    enable_tree: true
+    sign_threshold: 3
+  network:
+    ipdb_path: "./data/ipdb/GeoLite2-City.mmdb"
+    ipdb_max_size: 20  # MB
+  monitor:
+    interval: 1s
+    history_size: 300
+    alerts:
+      cpu_threshold: 90
+      mem_threshold: 85
+      disk_threshold: 90
+  filesystem:
+    hash_algorithm: "sha256"
+    max_hash_size: 100 * 1024 * 1024 * 1024  # 100GB
+    buffer_size: 32 * 1024
+  logging:
+    use_default_paths: true
+    custom_paths: []
+    recursive: false
+    supported_formats:
+      - "evtx"
+      - "etl"
+    max_file_size: 1 * 1024 * 1024 * 1024  # 1GB
+    charset: "utf-16le"
+  memory:
+    max_dump_size: 10 * 1024 * 1024 * 1024  # 10GB
+    block_size: 64 * 1024 * 1024            # 64MB
+  threat:
+    ioc_path: "./data/threat/ioc.db"
+    enable_online: false
+  report:
+    template_path: "./data/templates"
+    default_format: "html"
+  baseline:
+    template: "cis_windows"
+  codec:
+    enable_history: true
+    max_history: 100
+    retention_days: 7
+
+ui:
+  theme: "dark"
+  language: "zh-CN"
+  refresh_rate: 1s
+  table:
+    page_size: 50
+    virtual_scroll: true
+  chart:
+    animation: true
+    theme: "dark"
+  shortcuts:
+    enabled: true
+
+alert_rules:
+  - id: "cpu_high"
+    name: "CPU 使用率过高"
+    module_id: 7
+    condition:
+      metric: "cpu_percent"
+      type: greater
+    threshold: 90
+    duration: 30s
+    severity: high
+    enabled: true
+    actions: [log, notify]
+
+log:
+  level: "info"
+  file: "./logs/ert.log"
+  max_size: 500  # MB
+  max_backups: 5
+  max_age: 30    # days
+  compress: true
