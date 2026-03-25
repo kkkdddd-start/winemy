@@ -139,6 +139,87 @@ func (m *ActivityModule) parseLnkShortcut(lnkPath string) string {
 	return strings.TrimSpace(string(output))
 }
 
+func (m *ActivityModule) parseLnkFile(lnkPath string) map[string]interface{} {
+	result := map[string]interface{}{
+		"path":          lnkPath,
+		"target_path":   "",
+		"working_dir":   "",
+		"icon_location": "",
+		"arguments":     "",
+		"description":   "",
+		"created":       nil,
+		"modified":      nil,
+		"visited":       nil,
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut('%s')
+Write-Output ("TargetPath:" + $shortcut.TargetPath)
+Write-Output ("WorkingDirectory:" + $shortcut.WorkingDirectory)
+Write-Output ("IconLocation:" + $shortcut.IconLocation)
+Write-Output ("Arguments:" + $shortcut.Arguments)
+Write-Output ("Description:" + $shortcut.Description)
+Write-Output ("FullName:" + $shortcut.FullName)`, lnkPath))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return result
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "TargetPath:") {
+			result["target_path"] = strings.TrimPrefix(line, "TargetPath:")
+		} else if strings.HasPrefix(line, "WorkingDirectory:") {
+			result["working_dir"] = strings.TrimPrefix(line, "WorkingDirectory:")
+		} else if strings.HasPrefix(line, "IconLocation:") {
+			result["icon_location"] = strings.TrimPrefix(line, "IconLocation:")
+		} else if strings.HasPrefix(line, "Arguments:") {
+			result["arguments"] = strings.TrimPrefix(line, "Arguments:")
+		} else if strings.HasPrefix(line, "Description:") {
+			result["description"] = strings.TrimPrefix(line, "Description:")
+		} else if strings.HasPrefix(line, "FullName:") {
+			result["full_name"] = strings.TrimPrefix(line, "FullName:")
+		}
+	}
+
+	cmd2 := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$file = Get-Item '%s' -Force -ErrorAction SilentlyContinue
+if($file) {
+    Write-Output ("Created:" + $file.CreationTime.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+    Write-Output ("Modified:" + $file.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+    Write-Output ("Accessed:" + $file.LastAccessTime.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+}`, lnkPath))
+
+	output2, err := cmd2.Output()
+	if err == nil {
+		lines2 := strings.Split(string(output2), "\n")
+		for _, line := range lines2 {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Created:") {
+				t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimPrefix(line, "Created:"))
+				if err == nil {
+					result["created"] = t
+				}
+			} else if strings.HasPrefix(line, "Modified:") {
+				t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimPrefix(line, "Modified:"))
+				if err == nil {
+					result["modified"] = t
+				}
+			} else if strings.HasPrefix(line, "Accessed:") {
+				t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimPrefix(line, "Accessed:"))
+				if err == nil {
+					result["visited"] = t
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 func (m *ActivityModule) getLnkCreationTime(lnkPath string) time.Time {
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf(`(Get-Item '%s' -Force -ErrorAction SilentlyContinue).CreationTime.ToString("yyyy-MM-ddTHH:mm:ssZ")`, lnkPath))

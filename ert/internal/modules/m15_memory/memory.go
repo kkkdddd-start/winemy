@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -395,35 +397,213 @@ func (m *MemoryModule) MatchYARA(rulesPath string, dumpPath string) ([]map[strin
 		return nil, fmt.Errorf("YARA rules file not found: %w", err)
 	}
 
+	rulesContent, err := os.ReadFile(rulesPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rules file: %w", err)
+	}
+
+	patterns := m.parseYARARules(string(rulesContent))
+
+	dumpData, err := os.ReadFile(dumpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read dump file: %w", err)
+	}
+
+	dumpSize := len(dumpData)
+	if dumpSize > 100*1024*1024 {
+		dumpData = dumpData[:100*1024*1024]
+	}
+
+	for _, rule := range patterns {
+		if m.matchPattern(string(dumpData), rule.Pattern, rule.Condition) {
+			results = append(results, map[string]interface{}{
+				"rule_name":   rule.Name,
+				"category":    rule.Category,
+				"pattern":     rule.Pattern,
+				"condition":   rule.Condition,
+				"severity":    rule.Severity,
+				"description": rule.Description,
+				"dump_file":   dumpPath,
+				"matched":     true,
+			})
+		}
+	}
+
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
-$rules = Get-Content '%s' -Raw
 $dump = [System.IO.File]::ReadAllBytes('%s')
-$matches = @()
-
-$patterns = @(
-    @{ Name='Base64'; Pattern='[A-Za-z0-9+/]{20,}==?' },
-    @{ Name='URL'; Pattern='https?://[^\s]+' },
-    @{ Name='IP Address'; Pattern='\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}' },
-    @{ Name='Registry Key'; Pattern='HKLM\\|HKCU\\' },
-    @{ Name='File Path'; Pattern='[A-Z]:\\\\[^\s]+\.[a-z]{1,4}' }
-)
-
-foreach($p in $patterns) {
-    if($dump -join '' -match $p.Pattern) {
-        $matches += @{
-            RuleName = $p.Name
-            Pattern = $p.Pattern
-            Matched = $true
+$minLength = 4
+$results = @()
+$buffer = New-Object char[] $minLength
+$bufferIndex = 0
+$currentString = ""
+for($i = 0; $i -lt [Math]::Min($dump.Length, 10485760); $i++) {
+    $b = $dump[$i]
+    if(($b -ge 32 -and $b -le 126)) {
+        $currentString += [char]$b
+        if($currentString.Length -ge 8) {
+            $results += $currentString
         }
+    } else {
+        $currentString = ""
     }
 }
+$results | Select-Object -Unique | Select-Object -First 100 | ForEach-Object { Write-Output $_ }`, dumpPath))
 
-$matches | ForEach-Object { Write-Output ($_.RuleName + '|' + $_.Pattern) }`, rulesPath, dumpPath))
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && len(line) >= 8 {
+				for _, rule := range patterns {
+					if rule.Category == "string" && m.matchPattern(line, rule.Pattern, "contains") {
+						results = append(results, map[string]interface{}{
+							"rule_name":      rule.Name,
+							"category":       "string",
+							"pattern":        rule.Pattern,
+							"matched_string": line,
+							"severity":       rule.Severity,
+							"dump_file":      dumpPath,
+							"matched":        true,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return results, nil
+}
+
+type YARARule struct {
+	Name        string
+	Category    string
+	Pattern     string
+	Condition   string
+	Severity    string
+	Description string
+}
+
+func (m *MemoryModule) parseYARulesFile(rulesPath string) ([]YARARule, error) {
+	content, err := os.ReadFile(rulesPath)
+	if err != nil {
+		return nil, err
+	}
+	return m.parseYARARules(string(content)), nil
+}
+
+func (m *MemoryModule) parseYARARules(content string) []YARARule {
+	var rules []YARARule
+
+	ruleBlocks := strings.Split(content, "rule ")
+	for _, block := range ruleBlocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+
+		rule := YARARule{
+			Severity:  "medium",
+			Condition: "contains",
+		}
+
+		lines := strings.Split(block, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "name:") {
+				rule.Name = strings.TrimPrefix(line, "name:")
+			} else if strings.HasPrefix(line, "category:") {
+				rule.Category = strings.TrimPrefix(line, "category:")
+			} else if strings.HasPrefix(line, "pattern:") {
+				rule.Pattern = strings.TrimPrefix(line, "pattern:")
+			} else if strings.HasPrefix(line, "condition:") {
+				rule.Condition = strings.TrimPrefix(line, "condition:")
+			} else if strings.HasPrefix(line, "severity:") {
+				rule.Severity = strings.TrimPrefix(line, "severity:")
+			} else if strings.HasPrefix(line, "description:") {
+				rule.Description = strings.TrimPrefix(line, "description:")
+			}
+		}
+
+		if rule.Name != "" && rule.Pattern != "" {
+			rules = append(rules, rule)
+		}
+	}
+
+	if len(rules) == 0 {
+		rules = []YARARule{
+			{Name: "base64_strings", Category: "encoded", Pattern: `[A-Za-z0-9+/]{40,}==?`, Condition: "regex", Severity: "low", Description: "Base64 encoded string"},
+			{Name: "http_urls", Category: "network", Pattern: `https?://[^\s]+`, Condition: "regex", Severity: "medium", Description: "HTTP/HTTPS URL"},
+			{Name: "ip_addresses", Category: "network", Pattern: `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`, Condition: "regex", Severity: "medium", Description: "IP address"},
+			{Name: "registry_keys", Category: "system", Pattern: `HKLM\\|HKCU\\|HKCR\\`, Condition: "regex", Severity: "high", Description: "Windows registry key"},
+			{Name: "file_paths", Category: "system", Pattern: `[A-Z]:\\[^\s]+\.[a-z]{1,4}`, Condition: "regex", Severity: "low", Description: "Windows file path"},
+			{Name: "powershell_commands", Category: "suspicious", Pattern: `powershell.*-enc|-encodedcommand`, Condition: "contains", Severity: "high", Description: "Encoded PowerShell command"},
+			{Name: "mimikatz_pattern", Category: "malware", Pattern: `mimikatz|sekurlsa::logonpasswords`, Condition: "contains", Severity: "critical", Description: "Mimikatz credential dumping tool"},
+			{Name: "password_keywords", Category: "sensitive", Pattern: `password|passwd|pwd|secret`, Condition: "contains", Severity: "high", Description: "Potential password or secret"},
+		}
+	}
+
+	return rules
+}
+
+func (m *MemoryModule) matchPattern(data string, pattern string, condition string) bool {
+	switch condition {
+	case "contains":
+		return strings.Contains(strings.ToLower(data), strings.ToLower(pattern))
+	case "regex":
+		return m.matchRegex(data, pattern)
+	case "starts_with":
+		return strings.HasPrefix(strings.ToLower(data), strings.ToLower(pattern))
+	case "ends_with":
+		return strings.HasSuffix(strings.ToLower(data), strings.ToLower(pattern))
+	default:
+		return strings.Contains(strings.ToLower(data), strings.ToLower(pattern))
+	}
+}
+
+func (m *MemoryModule) matchRegex(data string, pattern string) bool {
+	matched, _ := regexp.MatchString(pattern, data)
+	return matched
+}
+
+func (m *MemoryModule) ExtractStringsDetailed(dumpPath string, minLength int) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	if _, err := os.Stat(dumpPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("dump file not found: %w", err)
+	}
+
+	if minLength < 4 {
+		minLength = 4
+	}
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$content = [System.IO.File]::ReadAllBytes('%s')
+$results = @()
+$currentString = ""
+$offset = 0
+for($i = 0; $i -lt [Math]::Min($content.Length, 10485760); $i++) {
+    $b = $content[$i]
+    if(($b -ge 32 -and $b -le 126)) {
+        $currentString += [char]$b
+    } else {
+        if($currentString.Length -ge %d) {
+            $results += [PSCustomObject]@{
+                String = $currentString
+                Offset = $offset
+                Length = $currentString.Length
+            }
+        }
+        $currentString = ""
+        $offset = $i + 1
+    }
+}
+$results | Select-Object -First 500 | ForEach-Object { Write-Output ($_.String + "|" + $_.Offset.ToString() + "|" + $_.Length.ToString()) }`, dumpPath, minLength))
 
 	output, err := cmd.Output()
 	if err != nil {
-		return results, nil
+		return nil, fmt.Errorf("failed to extract strings: %w", err)
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -433,11 +613,14 @@ $matches | ForEach-Object { Write-Output ($_.RuleName + '|' + $_.Pattern) }`, ru
 			continue
 		}
 		parts := strings.Split(line, "|")
-		if len(parts) >= 2 {
+		if len(parts) >= 3 {
+			offset, _ := strconv.ParseInt(parts[1], 10, 64)
+			length, _ := strconv.Atoi(parts[2])
 			results = append(results, map[string]interface{}{
-				"rule_name": parts[0],
-				"pattern":   parts[1],
-				"dump_file": dumpPath,
+				"string":  parts[0],
+				"offset":  offset,
+				"length":  length,
+				"address": fmt.Sprintf("0x%08X", offset),
 			})
 		}
 	}

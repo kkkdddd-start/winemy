@@ -58,29 +58,27 @@ func (m *DomainHackModule) detectKerberoasting() error {
 
 	cmd := exec.Command("powershell", "-Command", "Get-ADUser", "-Filter", "ServicePrincipalName -ne '$null'", "-Properties", "ServicePrincipalName,SamAccountName")
 	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "Get-ADUser") {
-			continue
-		}
-		if strings.Contains(line, "SPN:") {
-			parts := strings.Split(line, ":")
-			if len(parts) >= 2 {
-				spn := strings.TrimSpace(parts[1])
-				user := extractUserFromSPN(spn)
-				m.kerberoasting = append(m.kerberoasting, map[string]interface{}{
-					"type":        "kerberoasting",
-					"account":     user,
-					"spn":         spn,
-					"risk_level":  model.RiskHigh,
-					"description": "Account with SPN set - vulnerable to Kerberoasting",
-					"detected_at": time.Now().Format(time.RFC3339),
-				})
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.Contains(line, "Get-ADUser") {
+				continue
+			}
+			if strings.Contains(line, "SPN:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					spn := strings.TrimSpace(parts[1])
+					user := extractUserFromSPN(spn)
+					m.kerberoasting = append(m.kerberoasting, map[string]interface{}{
+						"type":        "kerberoasting",
+						"account":     user,
+						"spn":         spn,
+						"risk_level":  model.RiskHigh,
+						"description": "Account with SPN set - vulnerable to Kerberoasting",
+						"detected_at": time.Now().Format(time.RFC3339),
+					})
+				}
 			}
 		}
 	}
@@ -113,6 +111,94 @@ func (m *DomainHackModule) detectKerberoasting() error {
 		}
 	}
 
+	m.detectKerberoastingFromEvents()
+
+	return nil
+}
+
+func (m *DomainHackModule) detectKerberoastingFromEvents() error {
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Security';ID=4769} -MaxEvents 200 -ErrorAction SilentlyContinue | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $targetUser = ($eventData | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+    $targetDomain = ($eventData | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
+    $serviceName = ($eventData | Where-Object { $_.Name -eq 'ServiceName' }).'#text'
+    $ipAddress = ($eventData | Where-Object { $_.Name -eq 'IpAddress' }).'#text'
+    $ticketEncryption = ($eventData | Where-Object { $_.Name -eq 'TicketEncryptionType' }).'#text'
+    $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+    if($ticketEncryption -eq '0x17' -or $ticketEncryption -eq '0x18') {
+        Write-Output ("$targetDomain\$targetUser|$serviceName|$ipAddress|$ticketEncryption|$time")
+    }
+}`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+	spnCounts := make(map[string]int)
+	spnDetails := make(map[string]map[string]interface{})
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) >= 5 {
+			account := parts[0]
+			serviceName := parts[1]
+			ipAddress := parts[2]
+			ticketType := parts[3]
+			timeStamp := parts[4]
+
+			key := account + "|" + serviceName
+			spnCounts[key]++
+			if spnCounts[key] == 1 {
+				spnDetails[key] = map[string]interface{}{
+					"account":      account,
+					"service_name": serviceName,
+					"ip_address":   ipAddress,
+					"ticket_type":  ticketType,
+					"first_seen":   timeStamp,
+					"last_seen":    timeStamp,
+				}
+			} else {
+				spnDetails[key]["last_seen"] = timeStamp
+				spnDetails[key]["request_count"] = spnCounts[key]
+			}
+		}
+	}
+
+	for key, details := range spnDetails {
+		parts := strings.Split(key, "|")
+		if len(parts) >= 2 {
+			exists := false
+			for _, k := range m.kerberoasting {
+				if k["account"] == parts[0] && k["spn"] == parts[1] {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				m.kerberoasting = append(m.kerberoasting, map[string]interface{}{
+					"type":          "kerberoasting",
+					"account":       parts[0],
+					"spn":           parts[1],
+					"risk_level":    model.RiskHigh,
+					"description":   "SPN requested - potential Kerberoasting activity",
+					"detected_at":   details["last_seen"],
+					"source_ip":     details["ip_address"],
+					"ticket_type":   details["ticket_type"],
+					"request_count": spnCounts[key],
+				})
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -121,6 +207,50 @@ func (m *DomainHackModule) detectASREPRoasting() error {
 
 	cmd := exec.Command("powershell", "-Command", "Get-ADUser", "-Filter", "DoesNotRequirePreAuth -eq $true", "-Properties", "DoesNotRequirePreAuth,SamAccountName")
 	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.Contains(line, "Get-ADUser") {
+				continue
+			}
+			if strings.Contains(line, "True") || strings.Contains(line, "SamAccountName") {
+				user := extractUserFromLine(line)
+				if user != "" {
+					m.asRepRoasting = append(m.asRepRoasting, map[string]interface{}{
+						"type":        "as_rep_roasting",
+						"account":     user,
+						"risk_level":  model.RiskCritical,
+						"description": "Pre-authentication not required - vulnerable to AS-REP Roasting",
+						"detected_at": time.Now().Format(time.RFC3339),
+					})
+				}
+			}
+		}
+	}
+
+	m.detectASREPRoastingFromEvents()
+
+	return nil
+}
+
+func (m *DomainHackModule) detectASREPRoastingFromEvents() error {
+	cmd := exec.Command("powershell", "-Command",
+		`$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Security';ID=4768} -MaxEvents 100 -ErrorAction SilentlyContinue | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $eventData = $xml.Event.EventData.Data
+    $targetUser = ($eventData | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+    $targetDomain = ($eventData | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
+    $ticketOptions = ($eventData | Where-Object { $_.Name -eq 'TicketOptions' }).'#text'
+    $preAuthType = ($eventData | Where-Object { $_.Name -eq 'PreAuthType' }).'#text'
+    $time = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+    if($preAuthType -eq '0') {
+        Write-Output ("$targetDomain\$targetUser|$preAuthType|$ticketOptions|$time")
+    }
+}`)
+
+	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
@@ -128,18 +258,28 @@ func (m *DomainHackModule) detectASREPRoasting() error {
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "Get-ADUser") {
+		if line == "" {
 			continue
 		}
-		if strings.Contains(line, "True") || strings.Contains(line, "SamAccountName") {
-			user := extractUserFromLine(line)
-			if user != "" {
+		parts := strings.Split(line, "|")
+		if len(parts) >= 4 {
+			exists := false
+			account := parts[0]
+			for _, a := range m.asRepRoasting {
+				if a["account"] == account {
+					exists = true
+					break
+				}
+			}
+			if !exists {
 				m.asRepRoasting = append(m.asRepRoasting, map[string]interface{}{
-					"type":        "as_rep_roasting",
-					"account":     user,
-					"risk_level":  model.RiskCritical,
-					"description": "Pre-authentication not required - vulnerable to AS-REP Roasting",
-					"detected_at": time.Now().Format(time.RFC3339),
+					"type":           "as_rep_roasting",
+					"account":        account,
+					"pre_auth_type":  parts[1],
+					"ticket_options": parts[2],
+					"risk_level":     model.RiskCritical,
+					"description":    "AS-REQ without pre-authentication detected - potential AS-REP Roasting",
+					"detected_at":    parts[3],
 				})
 			}
 		}

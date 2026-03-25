@@ -15,7 +15,6 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
-	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
 
@@ -35,11 +34,29 @@ type MonitorModule struct {
 	netIn    uint64
 	netOut   uint64
 	alerts   []model.AlertEvent
+
+	cpuHistory         []float64
+	memHistory         []float64
+	diskHistory        []float64
+	netInHistory       []uint64
+	netOutHistory      []uint64
+	partitionStats     []map[string]interface{}
+	diskIOStats        []map[string]interface{}
+	lastCollection     time.Time
+	collectionInterval time.Duration
+	maxHistoryPoints   int
 }
 
 func New() *MonitorModule {
 	return &MonitorModule{
-		alerts: make([]model.AlertEvent, 0),
+		alerts:             make([]model.AlertEvent, 0),
+		cpuHistory:         make([]float64, 0),
+		memHistory:         make([]float64, 0),
+		diskHistory:        make([]float64, 0),
+		netInHistory:       make([]uint64, 0),
+		netOutHistory:      make([]uint64, 0),
+		collectionInterval: 2 * time.Second,
+		maxHistoryPoints:   60,
 	}
 }
 
@@ -60,16 +77,22 @@ func (m *MonitorModule) Collect(ctx context.Context) error {
 
 	m.running = true
 
+	var cpuPercent float64
 	if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {
-		m.cpu = percent[0]
-		if m.cpu > 80 {
+		cpuPercent = percent[0]
+		m.cpu = cpuPercent
+		m.cpuHistory = append(m.cpuHistory, cpuPercent)
+		if len(m.cpuHistory) > m.maxHistoryPoints {
+			m.cpuHistory = m.cpuHistory[1:]
+		}
+		if cpuPercent > 80 {
 			m.alerts = append(m.alerts, model.AlertEvent{
-				ID:        "cpu_alert_1",
+				ID:        fmt.Sprintf("cpu_alert_%d", len(m.alerts)+1),
 				RuleID:    "cpu_threshold",
 				RuleName:  "High CPU Usage",
 				Severity:  model.RiskHigh,
 				Message:   "CPU usage exceeded 80%",
-				Value:     m.cpu,
+				Value:     cpuPercent,
 				Threshold: 80,
 				Timestamp: time.Now(),
 				ModuleID:  7,
@@ -80,14 +103,19 @@ func (m *MonitorModule) Collect(ctx context.Context) error {
 	if memInfo, err := mem.VirtualMemory(); err == nil {
 		m.mem = memInfo.Used
 		m.memTotal = memInfo.Total
-		if memInfo.UsedPercent > 85 {
+		memPercent := memInfo.UsedPercent
+		m.memHistory = append(m.memHistory, memPercent)
+		if len(m.memHistory) > m.maxHistoryPoints {
+			m.memHistory = m.memHistory[1:]
+		}
+		if memPercent > 85 {
 			m.alerts = append(m.alerts, model.AlertEvent{
-				ID:        "mem_alert_1",
+				ID:        fmt.Sprintf("mem_alert_%d", len(m.alerts)+1),
 				RuleID:    "mem_threshold",
 				RuleName:  "High Memory Usage",
 				Severity:  model.RiskHigh,
 				Message:   "Memory usage exceeded 85%",
-				Value:     memInfo.UsedPercent,
+				Value:     memPercent,
 				Threshold: 85,
 				Timestamp: time.Now(),
 				ModuleID:  7,
@@ -95,24 +123,36 @@ func (m *MonitorModule) Collect(ctx context.Context) error {
 		}
 	}
 
+	var totalUsed uint64
 	if parts, err := disk.Partitions(false); err == nil {
-		var totalUsed uint64
 		for _, p := range parts {
 			if usage, err := disk.Usage(p.Mountpoint); err == nil {
 				totalUsed += usage.Used
 			}
 		}
 		m.disk = totalUsed
+		diskPercent := float64(totalUsed) / float64(m.memTotal) * 100
+		m.diskHistory = append(m.diskHistory, diskPercent)
+		if len(m.diskHistory) > m.maxHistoryPoints {
+			m.diskHistory = m.diskHistory[1:]
+		}
 	}
 
 	ioCounters, err := net.IOCounters(true)
 	if err == nil && len(ioCounters) > 0 {
 		m.netIn = ioCounters[0].BytesRecv
 		m.netOut = ioCounters[0].BytesSent
+		m.netInHistory = append(m.netInHistory, ioCounters[0].BytesRecv)
+		m.netOutHistory = append(m.netOutHistory, ioCounters[0].BytesSent)
+		if len(m.netInHistory) > m.maxHistoryPoints {
+			m.netInHistory = m.netInHistory[1:]
+		}
+		if len(m.netOutHistory) > m.maxHistoryPoints {
+			m.netOutHistory = m.netOutHistory[1:]
+		}
 	}
 
-	host.Info()
-
+	m.lastCollection = time.Now()
 	m.running = false
 	return nil
 }
@@ -396,4 +436,89 @@ func (m *MonitorModule) GetPartitionStats() ([]map[string]interface{}, error) {
 		})
 	}
 	return results, nil
+}
+
+func (m *MonitorModule) GetRealtimeHistory() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return map[string]interface{}{
+		"cpu_history":     m.cpuHistory,
+		"mem_history":     m.memHistory,
+		"disk_history":    m.diskHistory,
+		"net_in_history":  m.netInHistory,
+		"net_out_history": m.netOutHistory,
+		"cpu_current":     m.cpu,
+		"mem_current":     float64(m.mem),
+		"mem_total":       float64(m.memTotal),
+		"mem_percent":     len(m.memHistory) > 0,
+		"disk_current":    float64(m.disk),
+		"net_in_current":  m.netIn,
+		"net_out_current": m.netOut,
+		"timestamp":       time.Now().Format(time.RFC3339),
+	}
+}
+
+func (m *MonitorModule) GetNetworkConnectionCount() (map[string]interface{}, error) {
+	netIO, err := net.IOCounters(true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network IO counters: %w", err)
+	}
+
+	var totalConn uint64
+	for _, n := range netIO {
+		totalConn += n.Dropin + n.Dropout
+	}
+
+	connections, err := net.Connections("tcp")
+	tcpCount := len(connections)
+	if err != nil {
+		tcpCount = 0
+	}
+
+	udpConnections, err := net.Connections("udp")
+	udpCount := len(udpConnections)
+	if err != nil {
+		udpCount = 0
+	}
+
+	return map[string]interface{}{
+		"total_connections": totalConn,
+		"tcp_count":         tcpCount,
+		"udp_count":         udpCount,
+		"timestamp":         time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+func (m *MonitorModule) SetAlertThreshold(metric string, threshold float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range m.alerts {
+		if m.alerts[i].RuleID == metric+"_threshold" {
+			m.alerts[i].Threshold = threshold
+			return
+		}
+	}
+
+	m.alerts = append(m.alerts, model.AlertEvent{
+		RuleID:    metric + "_threshold",
+		RuleName:  "Custom " + metric + " Threshold",
+		Severity:  model.RiskMedium,
+		Threshold: threshold,
+		Timestamp: time.Now(),
+		ModuleID:  7,
+	})
+}
+
+func (m *MonitorModule) GetAlerts() []model.AlertEvent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.alerts
+}
+
+func (m *MonitorModule) ClearAlerts() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.alerts = make([]model.AlertEvent, 0)
 }

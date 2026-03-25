@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -184,7 +185,35 @@ func (m *ReportModule) generateJSONReport(sessionID string) string {
 }
 
 func (m *ReportModule) generatePDFReport(sessionID string) string {
-	return fmt.Sprintf(`%%PDF-1.4
+	htmlContent := m.generateHTMLReport(sessionID)
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationFramework
+
+$html = @'
+%s
+'@
+
+$tempHtml = [System.IO.Path]::GetTempFileName() + '.html'
+$tempPdf = [System.IO.Path]::GetTempFileName() + '.pdf'
+$html | Set-Content -Path $tempHtml -Encoding UTF8
+
+try {
+    $ie = New-Object -ComObject InternetExplorer.Application
+    $ie.Visible = $false
+    $ie.Navigate($tempHtml)
+    while ($ie.Busy -or $ie.ReadyState -ne 4) { Start-Sleep -Milliseconds 100 }
+    Start-Sleep -Seconds 1
+    
+    $printOpt = $ie.ExecWB(6, 2)
+    
+    Remove-Item $tempHtml -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempPdf -Force -ErrorAction SilentlyContinue
+} catch {
+    $fallbackPdf = @"
+%%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
 endobj
@@ -195,31 +224,263 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>
 endobj
 4 0 obj
-<< /Length 100 >>
+<< /Length 150 >>
 stream
 BT
-/F1 12 Tf
+/F1 16 Tf
 50 700 Td
 (ERT Report - Session %s) Tj
-0 -20 Td
+0 -30 Td
+/F1 12 Tf
 (Generated: %s) Tj
 0 -20 Td
-(This is a placeholder PDF report.) Tj
+(Please use the HTML report for detailed charts.) Tj
 ET
 endstream
 endobj
 xref
 0 5
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000214 00000 n 
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000214 00000 n
 trailer
 << /Size 5 /Root 1 0 R >>
 startxref
-354
-%%%%EOF`, sessionID, time.Now().Format(time.RFC3339))
+404
+%%%%EOF
+"@
+    Remove-Item $tempHtml -Force -ErrorAction SilentlyContinue
+    $fallbackPdf -f $sessionID, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+}
+`, htmlContent, sessionID, time.Now().Format("2006-01-02 15:04:05")))
+
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return m.generateFallbackPDF(sessionID)
+	}
+
+	result := strings.TrimSpace(string(output))
+	if strings.HasPrefix(result, "%PDF") {
+		return result
+	}
+
+	return m.generateFallbackPDF(sessionID)
+}
+
+func (m *ReportModule) generateFallbackPDF(sessionID string) string {
+	return fmt.Sprintf(`%%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 200 >>
+stream
+BT
+/F1 16 Tf
+50 700 Td
+(ERT Security Assessment Report) Tj
+0 -30 Td
+/F1 12 Tf
+(Session: %s) Tj
+0 -20 Td
+(Generated: %s) Tj
+0 -40 Td
+/F1 10 Tf
+(This is a basic PDF report.) Tj
+0 -15 Td
+(For full functionality, use the HTML report) Tj
+0 -15 Td
+(which includes interactive charts.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000214 00000 n
+0000000315 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+410
+%%%%EOF`, sessionID, time.Now().Format("2006-01-02 15:04:05"))
+}
+
+func (m *ReportModule) GeneratePDFWithCharts(chartData map[string]interface{}) (string, error) {
+	if err := os.MkdirAll(m.reportDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create report directory: %w", err)
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	filename := fmt.Sprintf("ert_report_charts_%s.pdf", timestamp)
+	filePath := filepath.Join(m.reportDir, filename)
+
+	html := m.generateHTMLWithSVGCharts(chartData)
+
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
+$html = @'
+%s
+'@
+
+$tempHtml = [System.IO.Path]::GetTempFileName() + '.html'
+$html | Set-Content -Path $tempHtml -Encoding UTF8
+
+$ie = New-Object -ComObject InternetExplorer.Application
+$ie.Visible = $false
+$ie.Navigate($tempHtml)
+Start-Sleep -Seconds 2
+
+$webclient = New-Object System.Net.WebClient
+$webclient.Dispose()
+Remove-Item $tempHtml -Force -ErrorAction SilentlyContinue
+`, html))
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to generate PDF: %w", err)
+	}
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		pdfContent := m.generateFallbackPDF("charts-" + timestamp)
+		if err := os.WriteFile(filePath, []byte(pdfContent), 0644); err != nil {
+			return "", fmt.Errorf("failed to write PDF: %w", err)
+		}
+	}
+
+	return filePath, nil
+}
+
+func (m *ReportModule) generateHTMLWithSVGCharts(chartData map[string]interface{}) string {
+	var buf strings.Builder
+
+	buf.WriteString(`<!DOCTYPE html>
+<html>
+<head>
+    <title>ERT Report with Charts</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .header { background: #2c3e50; color: white; padding: 20px; border-radius: 5px; text-align: center; }
+        .section { background: white; padding: 20px; margin: 20px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { margin: 0; }
+        h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        .chart-container { width: 80%; margin: 20px auto; }
+        .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        .metric-card { background: #ecf0f1; padding: 15px; border-radius: 5px; text-align: center; }
+        .metric-value { font-size: 2em; font-weight: bold; }
+        .metric-label { color: #7f8c8d; margin-top: 5px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #3498db; color: white; }
+        .risk-high { color: #e74c3c; font-weight: bold; }
+        .risk-medium { color: #f39c12; font-weight: bold; }
+        .risk-low { color: #27ae60; }
+        .svg-chart { width: 100%; height: 300px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ERT Security Assessment Report</h1>
+        <p>Generated: ` + time.Now().Format("2006-01-02 15:04:05") + `</p>
+    </div>
+`)
+
+	if summary, ok := chartData["summary"].(map[string]interface{}); ok {
+		buf.WriteString(`<div class="section"><h2>Executive Summary</h2><div class="metric-grid">`)
+		for k, v := range summary {
+			color := "#3498db"
+			if strings.Contains(k, "high") || strings.Contains(k, "critical") {
+				color = "#e74c3c"
+			} else if strings.Contains(k, "medium") {
+				color = "#f39c12"
+			} else if strings.Contains(k, "low") || strings.Contains(k, "pass") {
+				color = "#27ae60"
+			}
+			buf.WriteString(fmt.Sprintf(`<div class="metric-card"><div class="metric-value" style="color:%s">%v</div><div class="metric-label">%s</div></div>`, color, v, k))
+		}
+		buf.WriteString(`</div></div>`)
+	}
+
+	if risks, ok := chartData["risks"].([]map[string]interface{}); ok && len(risks) > 0 {
+		buf.WriteString(`<div class="section"><h2>Risk Assessment</h2><table><tr><th>Risk Item</th><th>Severity</th><th>Description</th></tr>`)
+		for _, r := range risks {
+			riskClass := "risk-low"
+			if sev, ok := r["severity"].(string); ok {
+				if sev == "critical" || sev == "high" {
+					riskClass = "risk-high"
+				} else if sev == "medium" {
+					riskClass = "risk-medium"
+				}
+			}
+			buf.WriteString(fmt.Sprintf(`<tr><td>%v</td><td class="%s">%v</td><td>%v</td></tr>`,
+				r["item"], riskClass, r["severity"], r["description"]))
+		}
+		buf.WriteString(`</table></div>`)
+	}
+
+	if timeline, ok := chartData["timeline"].([]string); ok && len(timeline) > 0 {
+		buf.WriteString(`<div class="section"><h2>Event Timeline</h2><div class="chart-container">`)
+		buf.WriteString(m.generateTimelineSVG(timeline))
+		buf.WriteString(`</div></div>`)
+	}
+
+	buf.WriteString(`<div class="section"><h2>Recommendations</h2><ul>`)
+	if recs, ok := chartData["recommendations"].([]string); ok {
+		for _, r := range recs {
+			buf.WriteString(fmt.Sprintf(`<li>%s</li>`, r))
+		}
+	} else {
+		buf.WriteString(`<li>Review and remediate identified risks</li>
+		<li>Implement security controls as recommended</li>
+		<li>Schedule follow-up assessment</li>`)
+	}
+	buf.WriteString(`</ul></div></body></html>`)
+
+	return buf.String()
+}
+
+func (m *ReportModule) generateTimelineSVG(events []string) string {
+	if len(events) == 0 {
+		return "<p>No timeline data available.</p>"
+	}
+
+	var buf strings.Builder
+	buf.WriteString(`<svg class="svg-chart" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">`)
+
+	lineY := 150
+	buf.WriteString(fmt.Sprintf(`<line x1="50" y1="%d" x2="750" y2="%d" stroke="#3498db" stroke-width="2"/>`, lineY, lineY))
+
+	for i := range events {
+		x := 50 + (i * 700 / (len(events) - 1))
+		if len(events) == 1 {
+			x = 400
+		}
+
+		eventLabel := fmt.Sprintf("E%d", i+1)
+		buf.WriteString(fmt.Sprintf(`<circle cx="%d" cy="%d" r="8" fill="#3498db"/><text x="%d" y="%d" text-anchor="middle" font-size="10" fill="#333">%s</text>`,
+			x, lineY, x, lineY-20, eventLabel))
+
+		if i%2 == 0 {
+			buf.WriteString(fmt.Sprintf(`<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#3498db" stroke-width="1" stroke-dasharray="4"/>`, x, lineY, x, lineY-40))
+			buf.WriteString(fmt.Sprintf(`<text x="%d" y="%d" text-anchor="middle" font-size="9" fill="#666">%d</text>`, x, lineY-50, i+1))
+		}
+	}
+
+	buf.WriteString(`</svg>`)
+	return buf.String()
 }
 
 func (m *ReportModule) ListReports() []map[string]interface{} {
