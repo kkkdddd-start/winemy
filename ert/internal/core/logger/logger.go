@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -39,34 +40,24 @@ func Init(level, logFile string, maxSize, maxBackups, maxAge int, compress bool)
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 
-	var writes []zapcore.WriteSyncer
+	var writeSyncer zapcore.WriteSyncer
 	if logFile != "" {
 		dir := filepath.Dir(logFile)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
-
-		fileWriter := zapcore.NewMutexWriter(zapcore.AddSync(&zapcore.BufferedWriteSyncer{
-			WS: zapcore.AddSync(&zapcore.MultiWriteSyncer{
-				zapcore.AddSync(os.Stdout),
-				zapcore.AddSync(&rotateFile{
-					filename:   logFile,
-					maxSize:    int64(maxSize) * 1024 * 1024,
-					maxBackups: maxBackups,
-					maxAge:     maxAge,
-					compress:   compress,
-				}),
-			}),
-			FlushInterval: time.Second * 5,
-		}))
-		writes = append(writes, fileWriter)
+		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return err
+		}
+		writeSyncer = zapcore.AddSync(file)
 	} else {
-		writes = append(writes, zapcore.AddSync(os.Stdout))
+		writeSyncer = zapcore.AddSync(os.Stdout)
 	}
 
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderConfig),
-		zapcore.NewMultiWriteSyncer(writes...),
+		writeSyncer,
 		zapLevel,
 	)
 
@@ -81,67 +72,42 @@ func GetLogger() *zap.Logger {
 	return globalLogger
 }
 
-func Debug(msg string, fields ...zap.Field) {
-	GetLogger().Debug(msg, fields...)
+func Debug(msg string) {
+	GetLogger().Debug(msg)
 }
 
-func Info(msg string, fields ...zap.Field) {
-	GetLogger().Info(msg, fields...)
+func Info(msg string) {
+	GetLogger().Info(msg)
 }
 
-func Warn(msg string, fields ...zap.Field) {
-	GetLogger().Warn(msg, fields...)
+func Warn(msg string) {
+	GetLogger().Warn(msg)
 }
 
-func Error(msg string, fields ...zap.Field) {
-	GetLogger().Error(msg, fields...)
+func Error(msg string) {
+	GetLogger().Error(msg)
 }
 
-func Fatal(msg string, fields ...zap.Field) {
-	GetLogger().Fatal(msg, fields...)
+func Fatal(msg string) {
+	GetLogger().Fatal(msg)
 }
 
-type rotateFile struct {
-	filename   string
-	maxSize    int64
-	maxBackups int
-	maxAge     int
-	compress   bool
-	current    int64
-	file       *os.File
+func Errorf(format string, args ...interface{}) {
+	GetLogger().Error(fmt.Sprintf(format, args...))
 }
 
-func (rf *rotateFile) Write(p []byte) (n int, err error) {
-	if rf.file == nil {
-		rf.file, err = os.OpenFile(rf.filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return 0, err
-		}
-		info, _ := rf.file.Stat()
-		rf.current = info.Size()
-	}
-
-	if rf.current >= rf.maxSize {
-		rf.file.Close()
-		rf.rotate()
-	}
-
-	n, err = rf.file.Write(p)
-	rf.current += int64(n)
-	return
+func Infof(format string, args ...interface{}) {
+	GetLogger().Info(fmt.Sprintf(format, args...))
 }
 
-func (rf *rotateFile) rotate() error {
-	backfile := rf.filename + ".1"
-	os.Rename(rf.filename, backfile)
-	rf.file, _ = os.Create(rf.filename)
-	rf.current = 0
-	return nil
+func Debugf(format string, args ...interface{}) {
+	GetLogger().Debug(fmt.Sprintf(format, args...))
 }
 
-func (rf *rotateFile) Sync() error {
-	if rf.file != nil {
-		return rf.file.Sync()
-	}
-	return nil
+func Warnf(format string, args ...interface{}) {
+	GetLogger().Warn(fmt.Sprintf(format, args...))
+}
+
+func Fatalf(format string, args ...interface{}) {
+	GetLogger().Fatal(fmt.Sprintf(format, args...))
 }

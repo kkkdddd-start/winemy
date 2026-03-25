@@ -60,7 +60,16 @@ func (m *SystemModule) collectSystemInfo() (*model.SystemInfo, error) {
 		info.OSVersion = hostInfo.PlatformVersion
 		info.Architecture = hostInfo.KernelArch
 		info.BootTime = time.Unix(int64(hostInfo.BootTime), 0)
-		info.CurrentUser = hostInfo.Username
+	}
+
+	userInfo, err := host.Users()
+	if err == nil && len(userInfo) > 0 {
+		for _, u := range userInfo {
+			if u.User != "" {
+				info.CurrentUser = u.User
+				break
+			}
+		}
 	}
 
 	memInfo, err := mem.VirtualMemory()

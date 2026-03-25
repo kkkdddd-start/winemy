@@ -12,7 +12,6 @@ import (
 	"github.com/yourname/ert/internal/config"
 	"github.com/yourname/ert/internal/core/logger"
 	"github.com/yourname/ert/internal/core/storage"
-	"github.com/yourname/ert/internal/registry"
 )
 
 var (
@@ -37,18 +36,14 @@ func main() {
 	dbPath := cfg.Database.Main.Path
 	if !filepath.IsAbs(dbPath) {
 		if dbPath, err = filepath.Abs(dbPath); err != nil {
-			logger.Error("Failed to get absolute path",
-				logger.GetLogger().Field("path", dbPath),
-			)
+			logger.Errorf("Failed to get absolute path: %s", err)
 			os.Exit(1)
 		}
 	}
 
 	stor, err := storage.New(dbPath)
 	if err != nil {
-		logger.Error("Failed to create storage",
-			logger.GetLogger().Field("error", err.Error()),
-		)
+		logger.Errorf("Failed to create storage: %s", err.Error())
 		os.Exit(1)
 	}
 	defer stor.Close()

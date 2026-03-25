@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-
-	"github.com/yourname/ert/internal/model"
 )
 
 type Module interface {
@@ -89,26 +87,6 @@ func (r *Registry) Collect(ctx context.Context, moduleID int) error {
 	return m.Collect(ctx)
 }
 
-func (r *Registry) GetData(ctx context.Context, moduleID int, query string) ([]map[string]interface{}, error) {
-	m, err := r.Get(moduleID)
-	if err != nil {
-		return nil, err
-	}
-
-	switch m.ID() {
-	case 2:
-		return queryProcessData(ctx, r.storage, query)
-	case 3:
-		return queryNetworkData(ctx, r.storage, query)
-	case 4:
-		return queryRegistryData(ctx, r.storage, query)
-	case 5:
-		return queryServiceData(ctx, r.storage, query)
-	default:
-		return nil, fmt.Errorf("module %d does not support data query", moduleID)
-	}
-}
-
 func (r *Registry) Stop(ctx context.Context) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -119,36 +97,4 @@ func (r *Registry) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func queryProcessData(ctx context.Context, s *Storage, query string) ([]map[string]interface{}, error) {
-	sql := "SELECT * FROM processes"
-	if query != "" {
-		sql += " WHERE " + query
-	}
-	return s.Query(ctx, sql)
-}
-
-func queryNetworkData(ctx context.Context, s *Storage, query string) ([]map[string]interface{}, error) {
-	sql := "SELECT * FROM network_connections"
-	if query != "" {
-		sql += " WHERE " + query
-	}
-	return s.Query(ctx, sql)
-}
-
-func queryRegistryData(ctx context.Context, s *Storage, query string) ([]map[string]interface{}, error) {
-	sql := "SELECT * FROM registry_keys"
-	if query != "" {
-		sql += " WHERE " + query
-	}
-	return s.Query(ctx, sql)
-}
-
-func queryServiceData(ctx context.Context, s *Storage, query string) ([]map[string]interface{}, error) {
-	sql := "SELECT * FROM services"
-	if query != "" {
-		sql += " WHERE " + query
-	}
-	return s.Query(ctx, sql)
 }
