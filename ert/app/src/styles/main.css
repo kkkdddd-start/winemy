@@ -1,0 +1,30 @@
+:root {
+  --ert-primary: #409eff;
+  --ert-success: #67c23a;
+  --ert-warning: #e6a23c;
+  --ert-danger: #f56c6c;
+  --ert-info: #909399;
+  --ert-bg-dark: #1a1a2e;
+  --ert-bg-light: #16213e;
+  --ert-text-primary: #ffffff;
+  --ert-text-secondary: #a0aec0;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--ert-bg-dark);
+  color: var(--ert-text-primary);
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+}

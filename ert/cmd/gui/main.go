@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,15 +13,8 @@ import (
 	"github.com/yourname/ert/internal/core/storage"
 )
 
-var (
-	configPath = flag.String("config", "config/config.yaml", "Path to config file")
-	mode       = flag.String("mode", "gui", "Run mode: gui or cli")
-)
-
 func main() {
-	flag.Parse()
-
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load("config/config.yaml")
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
@@ -60,22 +52,10 @@ func main() {
 		cancel()
 	}()
 
-	switch *mode {
-	case "gui":
-		runGUI(ctx, cfg, stor)
-	case "cli":
-		runCLI(ctx, cfg, stor)
-	default:
-		fmt.Printf("Unknown mode: %s\n", *mode)
-		os.Exit(1)
-	}
+	runGUI(ctx, cfg, stor)
 }
 
 func runGUI(ctx context.Context, cfg *config.Config, stor *storage.Storage) {
-	fmt.Println("GUI mode - Wails integration pending")
-}
-
-func runCLI(ctx context.Context, cfg *config.Config, stor *storage.Storage) {
-	fmt.Println("ERT CLI v13.0")
-	fmt.Println("CLI mode not yet implemented")
+	app := NewApp(ctx, cfg, stor)
+	app.Run()
 }

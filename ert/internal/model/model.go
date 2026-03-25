@@ -192,6 +192,40 @@ type CompareResult struct {
 	RemovedServices  []ServiceDTO     `json:"removed_services"`
 }
 
+type TimelineEvent struct {
+	ID          string    `json:"id"`
+	Timestamp   time.Time `json:"timestamp"`
+	ModuleID    int       `json:"module_id"`
+	EventType   string    `json:"event_type"`
+	Severity    RiskLevel `json:"severity"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Source      string    `json:"source"`
+	Target      string    `json:"target"`
+	Details     string    `json:"details"`
+	SessionID   string    `json:"session_id"`
+}
+
+type SessionSummary struct {
+	SessionID     string    `json:"session_id"`
+	Hostname      string    `json:"hostname"`
+	CollectedAt   time.Time `json:"collected_at"`
+	ProcessCount  int       `json:"process_count"`
+	NetworkCount  int       `json:"network_count"`
+	RegistryCount int       `json:"registry_count"`
+	ServiceCount  int       `json:"service_count"`
+	RiskScore     int       `json:"risk_score"`
+	RiskLevel     RiskLevel `json:"risk_level"`
+}
+
+type CompareSummary struct {
+	TotalAdded    int `json:"total_added"`
+	TotalRemoved  int `json:"total_removed"`
+	TotalModified int `json:"total_modified"`
+	RiskIncreased int `json:"risk_increased"`
+	RiskDecreased int `json:"risk_decreased"`
+}
+
 type Config struct {
 	App         AppConfig         `yaml:"app"`
 	Server      ServerConfig      `yaml:"server"`

@@ -10,7 +10,7 @@ type Module interface {
 	ID() int
 	Name() string
 	Priority() int
-	Init(ctx context.Context, s *Storage) error
+	Init(ctx context.Context, s Storage) error
 	Collect(ctx context.Context) error
 	Stop() error
 }
@@ -23,14 +23,35 @@ type Storage interface {
 type Registry struct {
 	modules map[int]Module
 	mu      sync.RWMutex
-	storage *Storage
+	storage Storage
 }
 
-func New(s *Storage) *Registry {
-	return &Registry{
+func New(s Storage) *Registry {
+	r := &Registry{
 		modules: make(map[int]Module),
-		storage: s,
 	}
+	if s != nil {
+		r.storage = s
+	} else {
+		r.storage = &storageAdapter{}
+	}
+	return r
+}
+
+func (r *Registry) SetStorage(s Storage) {
+	if s != nil {
+		r.storage = s
+	}
+}
+
+type storageAdapter struct{}
+
+func (a *storageAdapter) Write(ctx context.Context, table string, data interface{}) error {
+	return nil
+}
+
+func (a *storageAdapter) Query(ctx context.Context, query string, args ...interface{}) ([]map[string]interface{}, error) {
+	return nil, nil
 }
 
 func (r *Registry) Register(m Module) error {
@@ -97,4 +118,27 @@ func (r *Registry) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (r *Registry) CollectModule(ctx context.Context, moduleID int) error {
+	m, ok := r.modules[moduleID]
+	if !ok {
+		return fmt.Errorf("module %d not found", moduleID)
+	}
+	return m.Collect(ctx)
+}
+
+func (r *Registry) GetModuleData(ctx context.Context, moduleID int, query string) ([]map[string]interface{}, error) {
+	m, ok := r.modules[moduleID]
+	if !ok {
+		return nil, fmt.Errorf("module %d not found", moduleID)
+	}
+
+	if module, ok := m.(interface {
+		GetData() ([]map[string]interface{}, error)
+	}); ok {
+		return module.GetData()
+	}
+
+	return nil, fmt.Errorf("module %d does not support GetModuleData", moduleID)
 }

@@ -12,10 +12,11 @@ import (
 	"github.com/shirou/gopsutil/v4/net"
 
 	"github.com/yourname/ert/internal/model"
+	"github.com/yourname/ert/internal/registry"
 )
 
 type SystemModule struct {
-	info *model.SystemInfo
+	info interface{}
 }
 
 func New() *SystemModule {
@@ -26,7 +27,7 @@ func (m *SystemModule) ID() int       { return 1 }
 func (m *SystemModule) Name() string  { return "system" }
 func (m *SystemModule) Priority() int { return 0 }
 
-func (m *SystemModule) Init(ctx context.Context, s interface{}) error {
+func (m *SystemModule) Init(ctx context.Context, s registry.Storage) error {
 	return nil
 }
 
@@ -43,11 +44,15 @@ func (m *SystemModule) Stop() error {
 	return nil
 }
 
-func (m *SystemModule) GetSystemInfo() (*model.SystemInfo, error) {
+func (m *SystemModule) GetInfo() (*model.SystemInfo, error) {
 	if m.info == nil {
 		return nil, ErrNotCollected
 	}
-	return m.info, nil
+	info, ok := m.info.(*model.SystemInfo)
+	if !ok {
+		return nil, ErrNotCollected
+	}
+	return info, nil
 }
 
 func (m *SystemModule) collectSystemInfo() (*model.SystemInfo, error) {
