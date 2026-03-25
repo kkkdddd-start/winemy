@@ -4,6 +4,8 @@ package m11_filesystem
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -89,15 +91,19 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 		}
 
 		if ext == ".exe" || ext == ".dll" || ext == ".sys" {
-			hash, err := m.computeFileHash(path)
+			md5Hash, sha1Hash, sha256Hash, err := m.computeAllHashes(path)
 			if err == nil {
-				file.Hash = hash
+				file.MD5 = md5Hash
+				file.SHA1 = sha1Hash
+				file.SHA256 = sha256Hash
 			}
 
 			signed, sig := m.verifyAuthenticode(path)
 			file.IsSigned = signed
 			file.Signature = sig
 		}
+
+		file.Created = m.getFileCreationTime(path)
 
 		file.IsHidden = m.isHiddenFile(path)
 
@@ -107,7 +113,7 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 
 		file.HasADS = m.checkADS(path)
 
-		if info.Size() > 100*1024*1024*1024 {
+		if info.Size() > 100*1024*1024 {
 			file.IsLarge = true
 		}
 
@@ -131,19 +137,39 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 	})
 }
 
-func (m *FilesystemModule) computeFileHash(path string) (string, error) {
+func (m *FilesystemModule) computeAllHashes(path string) (md5Hash, sha1Hash, sha256Hash string, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", "", "", err
 	}
 	defer file.Close()
 
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
+	md5Hasher := md5.New()
+	sha1Hasher := sha1.New()
+	sha256Hasher := sha256.New()
+
+	writer := io.MultiWriter(md5Hasher, sha1Hasher, sha256Hasher)
+	if _, err := io.Copy(writer, file); err != nil {
+		return "", "", "", err
 	}
 
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(md5Hasher.Sum(nil)),
+		hex.EncodeToString(sha1Hasher.Sum(nil)),
+		hex.EncodeToString(sha256Hasher.Sum(nil)), nil
+}
+
+func (m *FilesystemModule) getFileCreationTime(path string) time.Time {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`(Get-Item '%s' -Force -ErrorAction SilentlyContinue).CreationTime.ToString("yyyy-MM-ddTHH:mm:ssZ")`, path))
+	output, err := cmd.Output()
+	if err != nil {
+		return time.Now()
+	}
+	t, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimSpace(string(output)))
+	if err != nil {
+		return time.Now()
+	}
+	return t
 }
 
 func assessFileRisk(path, hash string) model.RiskLevel {
@@ -251,8 +277,8 @@ func (m *FilesystemModule) Search(keyword string) ([]model.FileDTO, error) {
 	return results, nil
 }
 
-func (m *FilesystemModule) GetFileHash(path string) (string, error) {
-	return m.computeFileHash(path)
+func (m *FilesystemModule) GetFileHash(path string) (string, string, string, error) {
+	return m.computeAllHashes(path)
 }
 
 func (m *FilesystemModule) Stop() error {
@@ -266,7 +292,9 @@ func (m *FilesystemModule) GetData() ([]map[string]interface{}, error) {
 			"path":       f.Path,
 			"name":       f.Name,
 			"size":       f.Size,
-			"hash":       f.Hash,
+			"md5":        f.MD5,
+			"sha1":       f.SHA1,
+			"sha256":     f.SHA256,
 			"modified":   f.Modified.Format(time.RFC3339),
 			"created":    f.Created.Format(time.RFC3339),
 			"is_large":   f.IsLarge,

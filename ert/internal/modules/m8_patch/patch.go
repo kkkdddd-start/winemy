@@ -260,3 +260,15 @@ try {
 
 	return nil
 }
+
+func (m *PatchModule) Search(keyword string) []HotfixDTO {
+	results := []HotfixDTO{}
+	keywordLower := strings.ToLower(keyword)
+	for _, p := range m.installed {
+		if strings.Contains(strings.ToLower(p.HotfixID), keywordLower) ||
+			strings.Contains(strings.ToLower(p.Description), keywordLower) {
+			results = append(results, p)
+		}
+	}
+	return results
+}

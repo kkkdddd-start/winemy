@@ -4,6 +4,10 @@ package m7_monitor
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -183,4 +187,103 @@ func getStatus(value float64, threshold float64) string {
 		return "warning"
 	}
 	return "normal"
+}
+
+func (m *MonitorModule) ExportJSON(filePath string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	data := map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"metrics":   m.getMetricsData(),
+		"alerts":    m.alerts,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return os.WriteFile(filePath, jsonData, 0644)
+}
+
+func (m *MonitorModule) ExportCSV(filePath string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	writer.Write([]string{"Metric", "Value", "Unit", "Status", "Timestamp"})
+
+	for _, metric := range m.getMetricsData() {
+		writer.Write([]string{
+			metric["metric"].(string),
+			fmt.Sprintf("%v", metric["value"]),
+			metric["unit"].(string),
+			metric["status"].(string),
+			time.Now().Format(time.RFC3339),
+		})
+	}
+
+	for _, alert := range m.alerts {
+		writer.Write([]string{
+			"alert",
+			fmt.Sprintf("%v", alert.Value),
+			"",
+			fmt.Sprintf("%v", alert.Severity),
+			alert.Timestamp.Format(time.RFC3339),
+		})
+	}
+
+	return nil
+}
+
+func (m *MonitorModule) getMetricsData() []map[string]interface{} {
+	uptime := time.Now().Unix()
+
+	return []map[string]interface{}{
+		{
+			"metric": "cpu",
+			"value":  m.cpu,
+			"unit":   "percent",
+			"status": getStatus(m.cpu, 80),
+		},
+		{
+			"metric": "memory",
+			"value":  m.mem,
+			"unit":   "bytes",
+			"status": getStatus(float64(m.mem), float64(m.memTotal)*0.85),
+		},
+		{
+			"metric": "disk",
+			"value":  m.disk,
+			"unit":   "bytes",
+			"status": "normal",
+		},
+		{
+			"metric": "network_in",
+			"value":  m.netIn,
+			"unit":   "bytes",
+			"status": "normal",
+		},
+		{
+			"metric": "network_out",
+			"value":  m.netOut,
+			"unit":   "bytes",
+			"status": "normal",
+		},
+		{
+			"metric": "uptime",
+			"value":  uptime,
+			"unit":   "seconds",
+			"status": "normal",
+		},
+	}
 }

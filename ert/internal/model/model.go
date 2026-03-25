@@ -56,6 +56,7 @@ type SystemInfo struct {
 	OSVersion    string    `json:"os_version"`
 	Architecture string    `json:"architecture"`
 	BootTime     time.Time `json:"boot_time"`
+	Uptime       uint64    `json:"uptime"`
 	CurrentUser  string    `json:"current_user"`
 	CPUCount     int       `json:"cpu_count"`
 	MemoryTotal  uint64    `json:"memory_total"`
@@ -84,14 +85,17 @@ type ProcessTreeNode struct {
 }
 
 type NetworkConnDTO struct {
-	PID        uint32    `json:"pid"`
-	Protocol   string    `json:"protocol"`
-	LocalAddr  string    `json:"local_addr"`
-	LocalPort  uint16    `json:"local_port"`
-	RemoteAddr string    `json:"remote_addr"`
-	RemotePort uint16    `json:"remote_port"`
-	State      string    `json:"state"`
-	RiskLevel  RiskLevel `json:"risk_level"`
+	PID         uint32    `json:"pid"`
+	ProcessName string    `json:"process_name"`
+	Protocol    string    `json:"protocol"`
+	LocalAddr   string    `json:"local_addr"`
+	LocalPort   uint16    `json:"local_port"`
+	RemoteAddr  string    `json:"remote_addr"`
+	RemotePort  uint16    `json:"remote_port"`
+	Country     string    `json:"country"`
+	City        string    `json:"city"`
+	State       string    `json:"state"`
+	RiskLevel   RiskLevel `json:"risk_level"`
 }
 
 type RegistryKeyDTO struct {
@@ -104,12 +108,14 @@ type RegistryKeyDTO struct {
 }
 
 type ServiceDTO struct {
-	Name        string    `json:"name"`
-	DisplayName string    `json:"display_name"`
-	Status      string    `json:"status"`
-	StartType   string    `json:"start_type"`
-	Path        string    `json:"path"`
-	RiskLevel   RiskLevel `json:"risk_level"`
+	Name         string    `json:"name"`
+	DisplayName  string    `json:"display_name"`
+	Status       string    `json:"status"`
+	StartType    string    `json:"start_type"`
+	Path         string    `json:"path"`
+	Dependencies string    `json:"dependencies"`
+	Description  string    `json:"description"`
+	RiskLevel    RiskLevel `json:"risk_level"`
 }
 
 type ScheduledTaskDTO struct {
@@ -137,7 +143,9 @@ type FileDTO struct {
 	Path      string    `json:"path"`
 	Name      string    `json:"name"`
 	Size      uint64    `json:"size"`
-	Hash      string    `json:"hash"`
+	MD5       string    `json:"md5"`
+	SHA1      string    `json:"sha1"`
+	SHA256    string    `json:"sha256"`
 	Modified  time.Time `json:"modified"`
 	Created   time.Time `json:"created"`
 	IsLarge   bool      `json:"is_large"`

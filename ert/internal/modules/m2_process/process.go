@@ -4,7 +4,10 @@ package m2_process
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -218,10 +221,10 @@ func (m *ProcessModule) KillProcess(pid uint32) error {
 	return nil
 }
 
-func (m *ProcessModule) DumpProcess(pid uint32, outputDir string) (string, error) {
+func (m *ProcessModule) DumpProcess(pid uint32, outputDir string) (*model.MemoryDumpDTO, error) {
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
-		return "", fmt.Errorf("failed to create process: %w", err)
+		return nil, fmt.Errorf("failed to create process: %w", err)
 	}
 
 	name, _ := p.Name()
@@ -230,7 +233,7 @@ func (m *ProcessModule) DumpProcess(pid uint32, outputDir string) (string, error
 	}
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create output directory: %w", err)
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	timestamp := time.Now().Format("20060102150405")
@@ -264,17 +267,54 @@ if(Test-Path "%s") { Write-Output "SUCCESS" } else { Write-Output "FAILED" }`, p
 		miniDumpOutput, _ := miniDumpCmd.CombinedOutput()
 		if strings.Contains(string(miniDumpOutput), "SUCCESS") {
 			if _, err := os.Stat(dumpFile); err == nil {
-				return dumpFile, nil
+				return m.createMemoryDumpDTO(pid, name, "MiniDump", dumpFile)
 			}
 		}
-		return "", fmt.Errorf("failed to dump process: %s", string(miniDumpOutput))
+		return nil, fmt.Errorf("failed to dump process: %s", string(miniDumpOutput))
 	}
 
 	if _, err := os.Stat(dumpFile); err == nil {
-		return dumpFile, nil
+		return m.createMemoryDumpDTO(pid, name, "MiniDump", dumpFile)
 	}
 
-	return dumpFile, fmt.Errorf("dump file not created")
+	return nil, fmt.Errorf("dump file not created")
+}
+
+func (m *ProcessModule) createMemoryDumpDTO(pid uint32, name, dumpType, dumpFile string) (*model.MemoryDumpDTO, error) {
+	info, err := os.Stat(dumpFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dump file info: %w", err)
+	}
+
+	hash, err := computeFileHash(dumpFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute hash: %w", err)
+	}
+
+	return &model.MemoryDumpDTO{
+		PID:         pid,
+		ProcessName: name,
+		DumpType:    dumpType,
+		FilePath:    dumpFile,
+		FileSize:    uint64(info.Size()),
+		SHA256:      hash,
+		CreatedAt:   time.Now(),
+	}, nil
+}
+
+func computeFileHash(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (m *ProcessModule) Stop() error {

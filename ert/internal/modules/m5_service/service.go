@@ -5,6 +5,7 @@ package m5_service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -37,7 +38,7 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 	m.services = []model.ServiceDTO{}
 
 	cmd := exec.Command("powershell", "-Command",
-		`Get-Service | Select-Object Name, DisplayName, Status, StartType, @{Name='Path';Expression={(Get-WmiObject Win32_Service -Filter "Name='$($_.Name)'").PathName}} | ConvertTo-Json`)
+		`Get-Service | Select-Object Name, DisplayName, Status, StartType | ConvertTo-Json`)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -57,7 +58,6 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 		DisplayName string `json:"DisplayName"`
 		Status      int    `json:"Status"`
 		StartType   int    `json:"StartType"`
-		Path        string `json:"Path"`
 	}
 
 	if err := json.Unmarshal(output, &services); err != nil {
@@ -66,7 +66,6 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 			DisplayName string `json:"DisplayName"`
 			Status      int    `json:"Status"`
 			StartType   int    `json:"StartType"`
-			Path        string `json:"Path"`
 		}
 		if err2 := json.Unmarshal(output, &single); err2 == nil {
 			services = []struct {
@@ -74,7 +73,6 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 				DisplayName string `json:"DisplayName"`
 				Status      int    `json:"Status"`
 				StartType   int    `json:"StartType"`
-				Path        string `json:"Path"`
 			}{single}
 		}
 	}
@@ -112,7 +110,7 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 			startType = "Disabled"
 		}
 
-		path := cleanServicePath(s.Path)
+		path, deps, desc := m.getServiceDetails(s.Name)
 		riskLevel := model.RiskLow
 		if isSuspiciousService(path, s.Name) {
 			riskLevel = model.RiskHigh
@@ -124,16 +122,39 @@ func (m *ServiceModule) Collect(ctx context.Context) error {
 		}
 
 		m.services = append(m.services, model.ServiceDTO{
-			Name:        s.Name,
-			DisplayName: displayName,
-			Status:      status,
-			StartType:   startType,
-			Path:        path,
-			RiskLevel:   riskLevel,
+			Name:         s.Name,
+			DisplayName:  displayName,
+			Status:       status,
+			StartType:    startType,
+			Path:         path,
+			Dependencies: deps,
+			Description:  desc,
+			RiskLevel:    riskLevel,
 		})
 	}
 
 	return nil
+}
+
+func (m *ServiceModule) getServiceDetails(serviceName string) (path, dependencies, description string) {
+	cmd := exec.Command("powershell", "-Command",
+		fmt.Sprintf(`$svc = Get-WmiObject Win32_Service -Filter "Name='%s'" -ErrorAction SilentlyContinue; if($svc) { Write-Output "$($svc.PathName)|$($svc.Dependencies)|$($svc.Description)" }`, serviceName))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", "", ""
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(output)), "|")
+	if len(parts) >= 1 {
+		path = cleanServicePath(parts[0])
+	}
+	if len(parts) >= 2 {
+		dependencies = parts[1]
+	}
+	if len(parts) >= 3 {
+		description = strings.TrimSpace(parts[2])
+	}
+	return path, dependencies, description
 }
 
 func cleanServicePath(path string) string {

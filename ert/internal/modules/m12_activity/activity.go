@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,10 +41,11 @@ type USBDeviceDTO struct {
 }
 
 type BrowserHistoryDTO struct {
-	URL       string          `json:"url"`
-	Title     string          `json:"title"`
-	VisitedAt time.Time       `json:"visited_at"`
-	RiskLevel model.RiskLevel `json:"risk_level"`
+	URL        string          `json:"url"`
+	Title      string          `json:"title"`
+	VisitCount int             `json:"visit_count"`
+	VisitedAt  time.Time       `json:"visited_at"`
+	RiskLevel  model.RiskLevel `json:"risk_level"`
 }
 
 func New() *ActivityModule {
@@ -258,7 +260,11 @@ if(Test-Path $history) {
     [void]$adapter.Fill($dataset)
     $conn.Close()
     Remove-Item '%s' -Force -ErrorAction SilentlyContinue
-    $dataset.Tables[0] | ForEach-Object { Write-Output ($_.url + '|' + $_.title + '|' + $_.visit_count) }
+    foreach($row in $dataset.Tables[0].Rows) {
+        $timestamp = [long]$row.last_visit_time
+        $visiteTime = (Get-Date '1601-01-01').AddSeconds($timestamp / 10000000).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        Write-Output ($row.url + '|' + $row.title + '|' + $row.visit_count + '|' + $visiteTime)
+    }
 }`, dbPath, tempDb, tempDb, tempDb))
 
 	output, err := cmd.Output()
@@ -278,15 +284,29 @@ if(Test-Path $history) {
 		if len(parts) >= 1 {
 			url := parts[0]
 			title := ""
+			visitCount := 0
+			visitedAt := time.Now()
+
 			if len(parts) > 1 {
 				title = parts[1]
 			}
+			if len(parts) > 2 {
+				if count, err := strconv.Atoi(parts[2]); err == nil {
+					visitCount = count
+				}
+			}
+			if len(parts) > 3 {
+				if t, err := time.Parse("2006-01-02T15:04:05Z", parts[3]); err == nil {
+					visitedAt = t
+				}
+			}
 
 			m.browser = append(m.browser, BrowserHistoryDTO{
-				URL:       url,
-				Title:     title,
-				VisitedAt: time.Now(),
-				RiskLevel: model.RiskLow,
+				URL:        url,
+				Title:      title,
+				VisitCount: visitCount,
+				VisitedAt:  visitedAt,
+				RiskLevel:  model.RiskLow,
 			})
 		}
 	}

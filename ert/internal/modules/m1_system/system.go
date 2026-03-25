@@ -144,6 +144,7 @@ func (m *SystemModule) collectSystemInfo() (*model.SystemInfo, error) {
 		info.OSVersion = hostInfo.PlatformVersion
 		info.Architecture = hostInfo.KernelArch
 		info.BootTime = time.Unix(int64(hostInfo.BootTime), 0)
+		info.Uptime = hostInfo.Uptime
 	}
 
 	userInfo, err := host.Users()
