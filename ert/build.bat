@@ -112,29 +112,9 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo [INFO] Wails found, starting GUI build...
+echo [INFO] Wails will automatically build the frontend
 
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
-
-cd /d "%PROJECT_DIR%app"
-echo [STEP] Installing frontend dependencies...
-call npm install
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] npm install failed
-    exit /b 1
-)
-
-echo [STEP] Building frontend...
-call npm run build
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Frontend build failed
-    exit /b 1
-)
-if not exist "dist" (
-    echo [ERROR] Frontend dist not found
-    exit /b 1
-)
-
-cd /d "%PROJECT_DIR%"
 
 echo [STEP] Building Wails application...
 wails build -platform windows/amd64 -outputname "%GUI_OUTPUT%"
