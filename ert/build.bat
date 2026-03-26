@@ -117,7 +117,7 @@ echo [INFO] Wails will automatically build the frontend
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo [STEP] Building Wails application...
-wails build -platform windows/amd64 -outputname "%GUI_OUTPUT%"
+wails build -platform windows/amd64 -o "%GUI_OUTPUT%"
 if %ERRORLEVEL% equ 0 (
     if exist "%GUI_OUTPUT%" (
         echo [SUCCESS] GUI: %GUI_OUTPUT%
