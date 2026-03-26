@@ -1,25 +1,25 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "ERT",
-  "outputfilename": "ert",
+  "outputfilename": "ERT",
   "frontend": {
-    "dir": "app",
-    "install": "cd app && npm install",
-    "build": "cd app && npm run build",
-    "dev": "cd app && npm run dev"
+    "dir": "./app",
+    "install": "npm install",
+    "build": "npm run build",
+    "dev": "npm run dev"
   },
   "wailsjsdir": "./app/src",
   "author": {
-    "name": "Your Name",
-    "email": "your@email.com"
+    "name": "ERT Team",
+    "email": "ert@example.com"
   },
   "info": {
-    "companyName": "Your Company",
+    "companyName": "ERT",
     "productName": "Windows Emergency Response Tool",
     "productVersion": "13.0",
     "copyright": "Copyright 2026",
-    "comments": "Windows Emergency Response Tool for incident response"
+    "comments": "Windows Emergency Response Tool"
   },
-  "version": "2.8.0",
+  "version": "2.11.0",
   "outputType": "desktop"
 }
