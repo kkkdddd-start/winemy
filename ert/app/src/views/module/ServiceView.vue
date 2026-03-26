@@ -301,10 +301,11 @@ function handleFeature(feature: string) {
   ElMessage.info(`功能: ${feature}`)
 }
 
-function handleRefresh() {
+async function handleRefresh() {
   loading.value = true
-  const { Go } = await import('@wailsjs/go/main/App')
-  Go.GetServices().then((result: any) => {
+  try {
+    const { Go } = await import('@wailsjs/go/main/App')
+    const result = await Go.GetServices()
     if (result && Array.isArray(result)) {
       services.value = result.map((s: any) => ({
         name: s.name || '',
@@ -317,12 +318,12 @@ function handleRefresh() {
       }))
     }
     ElMessage.success('刷新成功')
-  }).catch((error: any) => {
+  } catch (error) {
     console.error('Failed to load services:', error)
     ElMessage.error('刷新失败')
-  }).finally(() => {
+  } finally {
     loading.value = false
-  })
+  }
 }
 </script>
 
