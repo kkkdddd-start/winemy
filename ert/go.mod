@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/shirou/gopsutil/v4 v4.26.2
-	github.com/wailsapp/wails/v2 v2.8.0
+	github.com/wailsapp/wails/v2 v2.11.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/sync v0.6.0
 	gopkg.in/yaml.v3 v3.0.1

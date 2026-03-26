@@ -2,10 +2,12 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "ERT",
   "outputfilename": "ert",
-  "frontend:install": "cd app && npm install",
-  "frontend:build": "cd app && npm run build",
-  "frontend:dev:watcher": "cd app && npm run dev",
-  "frontend:directory": "app",
+  "frontend": {
+    "dir": "app",
+    "install": "cd app && npm install",
+    "build": "cd app && npm run build",
+    "dev": "cd app && npm run dev"
+  },
   "wailsjsdir": "./app/src",
   "author": {
     "name": "Your Name",
