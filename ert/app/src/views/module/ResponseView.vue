@@ -665,60 +665,6 @@ async function handleRestoreFile() {
   }
 }
 
-async function handleBackup() {
-  if (!backupForm.value.path) {
-    ElMessage.warning('请输入文件路径')
-    return
-  }
-
-  actionLoading.value = true
-  try {
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    historyList.value.unshift({
-      timestamp: new Date().toISOString(),
-      type: 'backup_file',
-      path: backupForm.value.path,
-      status: 'success',
-      message: '文件已备份'
-    })
-
-    backupDialogVisible.value = false
-    ElMessage.success('文件已备份')
-  } catch (error) {
-    ElMessage.error('文件备份失败')
-  } finally {
-    actionLoading.value = false
-  }
-}
-
-async function handleRestoreFile() {
-  if (!restoreFileForm.value.backupPath) {
-    ElMessage.warning('请输入备份文件路径')
-    return
-  }
-
-  actionLoading.value = true
-  try {
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    historyList.value.unshift({
-      timestamp: new Date().toISOString(),
-      type: 'restore_file',
-      backup_path: restoreFileForm.value.backupPath,
-      status: 'success',
-      message: '文件已恢复'
-    })
-
-    restoreFileDialogVisible = false
-    ElMessage.success('文件已恢复')
-  } catch (error) {
-    ElMessage.error('文件恢复失败')
-  } finally {
-    actionLoading.value = false
-  }
-}
-
 async function handleExportLog() {
   try {
     const logContent = JSON.stringify(historyList.value, null, 2)
