@@ -665,27 +665,6 @@ async function handleRestoreFile() {
   }
 }
 
-  actionLoading.value = true
-  try {
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    historyList.value.unshift({
-      timestamp: new Date().toISOString(),
-      type: 'restore_registry',
-      path: `${restoreRegistryForm.value.path}\\${restoreRegistryForm.value.valueName}`,
-      status: 'success',
-      message: '注册表已恢复'
-    })
-
-    restoreRegistryDialogVisible.value = false
-    ElMessage.success('注册表已恢复')
-  } catch (error) {
-    ElMessage.error('注册表修复失败')
-  } finally {
-    actionLoading.value = false
-  }
-}
-
 async function handleBackup() {
   if (!backupForm.value.path) {
     ElMessage.warning('请输入文件路径')
