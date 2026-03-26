@@ -121,7 +121,7 @@ func (m *FilesystemModule) scanDirectory(root string, maxDepth int) ([]model.Fil
 		if ext == ".tmp" || ext == ".vbs" || ext == ".js" || ext == ".jse" ||
 			ext == ".vbe" || ext == ".ws" || ext == ".wsh" || ext == ".scr" ||
 			ext == ".pif" || ext == ".msi" || ext == ".msp" || ext == ".bat" ||
-			ext == ".cmd" || ext == ".ps1" || ext == ".psm1" || ext == ".vbs" {
+			ext == ".cmd" || ext == ".ps1" || ext == ".psm1" {
 			file.RiskLevel = model.RiskMedium
 		}
 

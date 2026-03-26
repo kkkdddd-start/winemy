@@ -434,7 +434,7 @@ func (m *LoggingModule) ExportHTML(filePath string) error {
             <td>%s</td>
             <td>%s</td>
             <td>%s</td>
-            <td class="%s">%s</td>
+            <td class="%s">%d</td>
         </tr>`, l.TimeCreated.Format(time.RFC3339), l.EventID, l.Level, l.Source, l.Channel, message, riskClass, l.RiskLevel)
 	}
 

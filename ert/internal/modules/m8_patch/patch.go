@@ -337,7 +337,7 @@ $session = New-Object -ComObject Microsoft.Update.Session
 $searcher = $session.CreateUpdateSearcher()
 $kb = '%s' -replace 'KB', ''
 try {
-    $updates = $searcher.Search("UpdateID like '%$kb%'").Updates
+    $updates = $searcher.Search("UpdateID like '%%%s%%'").Updates
     foreach($update in $updates) {
         if($update.KBArticleIDs -contains $kb -or $update.Title -like "*$kb*") {
             Write-Output $update.SupportUrl
@@ -347,7 +347,7 @@ try {
 } catch { }
 if(-not $updates) {
     Write-Output "https://catalog.update.microsoft.com/"
-}`, kbID))
+}`, kbID, kbID))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -367,7 +367,7 @@ $session = New-Object -ComObject Microsoft.Update.Session
 $searcher = $session.CreateUpdateSearcher()
 $kb = '%s' -replace 'KB', ''
 try {
-    $updates = $searcher.Search("UpdateID like '%$kb%'").Updates
+    $updates = $searcher.Search("UpdateID like '%%%s%%'").Updates
     foreach($update in $updates) {
         if($update.KBArticleIDs -contains $kb -or $update.Title -like "*$kb*") {
             $sizeKB = [math]::Round($update.MaxDownloadSize / 1024, 2)
@@ -379,7 +379,7 @@ try {
 } catch { }
 if(-not $updates) {
     Write-Output "0|0"
-}`, kbID))
+}`, kbID, kbID))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -419,7 +419,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Securit
 		eventLogPath := strings.TrimSpace(string(output))
 		if eventLogPath != "" {
 			cmd2 := exec.Command("powershell", "-Command",
-				fmt.Sprintf(`wevtutil qe Security /c:50 /f:text /rd:true | Select-String -Pattern "Rollback|1202"`, eventLogPath))
+				`wevtutil qe Security /c:50 /f:text /rd:true | Select-String -Pattern "Rollback|1202"`)
 			output2, err2 := cmd2.Output()
 			if err2 == nil {
 				lines := strings.Split(string(output2), "\n")
