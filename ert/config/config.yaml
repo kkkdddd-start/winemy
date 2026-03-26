@@ -14,35 +14,35 @@ database:
     busy_timeout: 5000
     max_open_conns: 10
   cache:
-    max_cost: 100 * 1024 * 1024  # 100MB
-    buffer_size: 32 * 1024       # 32KB
-    ttl: 10m                     # 10分钟
+    max_cost: 104857600
+    buffer_size: 32768
+    ttl: 600
 
 storage:
   data_dir: "./data"
   dump_dir: "./data/memory"
   report_dir: "./data/reports"
-  max_storage: 50  # GB
+  max_storage: 50
 
 concurrency:
-  high_priority_workers: 10    # P0 任务
-  medium_priority_workers: 5   # P1 任务
-  low_priority_workers: 2     # P2 任务
+  high_priority_workers: 10
+  medium_priority_workers: 5
+  low_priority_workers: 2
   aging:
-    max_wait_time: 5m
+    max_wait_time: 300
     boost_threshold: 10
     priority_boost: 2
-    check_interval: 30s
+    check_interval: 30
 
 timeout:
-  global: 5m
+  global: 300
   module:
-    process: 30s
-    network: 30s
-    registry: 60s
-    filesystem: 300s
-    logging: 600s
-    memory_dump: 600s
+    process: 30
+    network: 30
+    registry: 60
+    filesystem: 300
+    logging: 600
+    memory_dump: 600
 
 security:
   readonly: true
@@ -62,15 +62,15 @@ security:
 
 modules:
   system:
-    refresh_interval: 1s
+    refresh_interval: 1
   process:
     enable_tree: true
     sign_threshold: 3
   network:
     ipdb_path: "./data/ipdb/GeoLite2-City.mmdb"
-    ipdb_max_size: 20  # MB
+    ipdb_max_size: 20
   monitor:
-    interval: 1s
+    interval: 1
     history_size: 300
     alerts:
       cpu_threshold: 90
@@ -78,8 +78,8 @@ modules:
       disk_threshold: 90
   filesystem:
     hash_algorithm: "sha256"
-    max_hash_size: 100 * 1024 * 1024 * 1024  # 100GB
-    buffer_size: 32 * 1024
+    max_hash_size: 107374182400
+    buffer_size: 32768
   logging:
     use_default_paths: true
     custom_paths: []
@@ -87,11 +87,11 @@ modules:
     supported_formats:
       - "evtx"
       - "etl"
-    max_file_size: 1 * 1024 * 1024 * 1024  # 1GB
+    max_file_size: 1073741824
     charset: "utf-16le"
   memory:
-    max_dump_size: 10 * 1024 * 1024 * 1024  # 10GB
-    block_size: 64 * 1024 * 1024            # 64MB
+    max_dump_size: 10737418240
+    block_size: 67108864
   threat:
     ioc_path: "./data/threat/ioc.db"
     enable_online: false
@@ -108,7 +108,7 @@ modules:
 ui:
   theme: "dark"
   language: "zh-CN"
-  refresh_rate: 1s
+  refresh_rate: 1
   table:
     page_size: 50
     virtual_scroll: true
@@ -126,7 +126,7 @@ alert_rules:
       metric: "cpu_percent"
       type: greater
     threshold: 90
-    duration: 30s
+    duration: 30
     severity: high
     enabled: true
     actions: [log, notify]
@@ -134,7 +134,7 @@ alert_rules:
 log:
   level: "info"
   file: "./logs/ert.log"
-  max_size: 500  # MB
+  max_size: 500
   max_backups: 5
-  max_age: 30    # days
+  max_age: 30
   compress: true
